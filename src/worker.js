@@ -78,6 +78,11 @@ async function createReport(request, env, origin) {
   report.id = id;
   report.createdAt = new Date().toISOString();
 
+  report.stats = await nextBaseTestStats(
+    env,
+    report.createdAt
+  );
+
   await env.REPORTS.put(`report:${id}`, JSON.stringify(report), {
     expirationTtl: reportTtl(env.REPORT_TTL_SECONDS),
   });
@@ -121,7 +126,7 @@ async function renderReport(env, id) {
   const report = await env.REPORTS.get(`report:${id}`, { type: "json" });
   if (!report) return html(notFoundPage(), 404);
   return html(reportPage(report), 200, {
-    "cache-control": "public, max-age=60",
+    "cache-control": "no-store",
     "x-robots-tag": "noindex, nofollow",
   });
 }
@@ -168,6 +173,113 @@ function randomId() {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+}
+
+
+function beijingDay(value) {
+  const date = new Date(value);
+
+  if (!Number.isFinite(date.getTime())) {
+    return "";
+  }
+
+  const bj = new Date(
+    date.getTime() + 8 * 60 * 60 * 1000
+  );
+
+  return bj.toISOString().slice(0, 10);
+}
+
+async function nextBaseTestStats(env, createdAt) {
+  const day = beijingDay(createdAt);
+
+  const dailyKey = `basetest:stats:daily:${day}`;
+  const totalKey = "basetest:stats:total";
+
+  let daily = Number(
+    await env.REPORTS.get(dailyKey)
+  );
+
+  let total = Number(
+    await env.REPORTS.get(totalKey)
+  );
+
+  if (!Number.isInteger(daily) || daily < 0) {
+    daily = 0;
+  }
+
+  if (!Number.isInteger(total) || total < 0) {
+    total = 0;
+  }
+
+  daily += 1;
+  total += 1;
+
+  await Promise.all([
+    env.REPORTS.put(
+      dailyKey,
+      String(daily)
+    ),
+
+    env.REPORTS.put(
+      totalKey,
+      String(total)
+    ),
+  ]);
+
+  return {
+    daily,
+    total,
+  };
+}
+
+function formatReportTime(value) {
+  const date = new Date(value);
+
+  if (!Number.isFinite(date.getTime())) {
+    return "—";
+  }
+
+  const bj = new Date(
+    date.getTime() + 8 * 60 * 60 * 1000
+  );
+
+  return (
+    bj.toISOString()
+      .slice(0, 19)
+      .replace("T", " ")
+    + " CST（北京时间）"
+  );
+}
+
+function reportStatsMarkup(report, type, hidden = false) {
+  const daily =
+    Number.isInteger(report?.stats?.daily)
+      ? report.stats.daily
+      : "—";
+
+  const total =
+    Number.isInteger(report?.stats?.total)
+      ? report.stats.total
+      : "—";
+
+  return `
+    <div
+      class="report-stats ${esc(type)}"
+      data-report-stats="${esc(type)}"
+      ${hidden ? "hidden" : ""}
+    >
+      <div>
+        报告时间：${esc(formatReportTime(report.createdAt))}
+      </div>
+
+      <div>
+        今日报告次数：${esc(daily)}
+        <span class="stats-gap"></span>
+        累计报告次数：${esc(total)}
+      </div>
+    </div>
+  `;
 }
 
 async function secureEqual(a, b) {
@@ -359,25 +471,49 @@ function stripAnsi(value) {
 }
 
 function splitNodeQuality(log) {
-  const buckets = { basic: [], ip: [], network: [], route: [] };
-  let current = "basic";
-  const lines = String(log || "").split("\n");
+  const buckets = {
+    basic: [],
+    ip: [],
+    network: [],
+    route: [],
+  };
 
-  for (const rawLine of lines) {
+  const raw = String(log || "");
+  let current = "";
+
+  for (const rawLine of raw.split("\n")) {
     const line = stripAnsi(rawLine).trim();
+
+    if (/^(正在运行硬件质量测试|Running\s+Hardware\s+Quality\s+Test)/i.test(line)) {
+      current = "basic";
+      continue;
+    }
+
     if (/^(正在运行\s*IP\s*质量测试|Running\s+IP\s+Quality\s+Test)/i.test(line)) {
       current = "ip";
-    } else if (/^(正在运行网络质量测试|Running\s+Network\s+Quality\s+Test)/i.test(line)) {
-      current = "network";
-    } else if (/^(正在运行回程路由追踪|Running\s+Backroute\s+Trace)/i.test(line)) {
-      current = "route";
+      continue;
     }
+
+    if (/^(正在运行网络质量测试|Running\s+Network\s+Quality\s+Test)/i.test(line)) {
+      current = "network";
+      continue;
+    }
+
+    if (/^(正在运行回程路由追踪|Running\s+Backroute\s+Trace)/i.test(line)) {
+      current = "route";
+      continue;
+    }
+
+    // 测试真正开始之前的 Logo、安装、下载、清理信息全部丢弃
+    if (!current) continue;
+
     buckets[current].push(rawLine);
   }
 
   for (const key of Object.keys(buckets)) {
     buckets[key] = buckets[key].join("\n").trim();
   }
+
   return buckets;
 }
 
@@ -487,19 +623,47 @@ function buildMarkdownReport(parts) {
   return `# BaseTest\n\n${blocks.join("\n\n")}`;
 }
 
-function sectionMarkup(key, title, source, value, index) {
+function sectionMarkup(
+  key,
+  title,
+  source,
+  value,
+  index,
+  report
+) {
   const content = String(value || "").trim();
 
-  // 无数据时板块仍然保留，只留空内容。
+  const stats = content
+    ? reportStatsMarkup(
+        report,
+        "section-report-stats",
+        true
+      )
+    : "";
+
   return `
-    <section class="report-section" data-section="${esc(key)}">
+    <section
+      class="report-section"
+      data-section="${esc(key)}"
+      data-has-content="${content ? "1" : "0"}"
+    >
       <div class="section-head">
-        <span class="section-no">${String(index).padStart(2, "0")}</span>
+        <span class="section-no">
+          ${String(index).padStart(2, "0")}
+        </span>
+
         <h2>${esc(title)}</h2>
-        <span class="section-source">${esc(source)}</span>
+
+        <span class="section-source">
+          ${esc(source)}
+        </span>
       </div>
+
       <pre class="report-output${content ? "" : " empty-output"}">${content ? ansiToHtml(content) : ""}</pre>
-    </section>`;
+
+      ${stats}
+    </section>
+  `;
 }
 
 function reportPage(report) {
@@ -525,6 +689,10 @@ function reportPage(report) {
   const nodeSeek = buildNodeSeekReport(parts);
   const markdown = buildMarkdownReport(parts);
 
+  const hasAnyContent = Object.values(parts).some(
+    (value) => String(value || "").trim()
+  );
+
   // 板块固定显示，不因为没有数据而隐藏。
   const available = [
     ["basic", "基本信息"],
@@ -547,17 +715,17 @@ function reportPage(report) {
   let index = 1;
 
   const sections = [
-    sectionMarkup("basic", "基本信息", "NodeQuality", parts.basic, index++),
-    sectionMarkup("ip", "IP质量", "NodeQuality", parts.ip, index++),
-    sectionMarkup("network", "网络质量", "NodeQuality", parts.network, index++),
-    sectionMarkup("route", "回程路由", "NodeQuality", parts.route, index++),
+    sectionMarkup("basic", "基本信息", "NodeQuality", parts.basic, index++, report),
+    sectionMarkup("ip", "IP质量", "NodeQuality", parts.ip, index++, report),
+    sectionMarkup("network", "网络质量", "NodeQuality", parts.network, index++, report),
+    sectionMarkup("route", "回程路由", "NodeQuality", parts.route, index++, report),
 
-    sectionMarkup("tcp-ipv4", "IPv4回程", "TcpQuality", parts.tcpIpv4, index++),
-    sectionMarkup("tcp-large4", "IPv4大包回程", "TcpQuality", parts.tcpLarge4, index++),
-    sectionMarkup("tcp-ipv6", "IPv6回程", "TcpQuality", parts.tcpIpv6, index++),
-    sectionMarkup("tcp-education", "教育网回程", "TcpQuality", parts.tcpEducation, index++),
-    sectionMarkup("tcp-international", "国际互联", "TcpQuality", parts.tcpInternational, index++),
-    sectionMarkup("tcp-speedtest", "单线程测速", "TcpQuality", parts.tcpSpeedtest, index++),
+    sectionMarkup("tcp-ipv4", "IPv4回程", "TcpQuality", parts.tcpIpv4, index++, report),
+    sectionMarkup("tcp-large4", "IPv4大包回程", "TcpQuality", parts.tcpLarge4, index++, report),
+    sectionMarkup("tcp-ipv6", "IPv6回程", "TcpQuality", parts.tcpIpv6, index++, report),
+    sectionMarkup("tcp-education", "教育网回程", "TcpQuality", parts.tcpEducation, index++, report),
+    sectionMarkup("tcp-international", "国际互联", "TcpQuality", parts.tcpInternational, index++, report),
+    sectionMarkup("tcp-speedtest", "单线程测速", "TcpQuality", parts.tcpSpeedtest, index++, report),
   ].join("");
 
   const nodeFailed = nq.exitCode !== null && nq.exitCode !== 0;
@@ -601,6 +769,16 @@ function reportPage(report) {
         ${sections || '<div class="empty">没有可显示的测试内容。</div>'}
       </div>
 
+      ${
+        hasAnyContent
+          ? reportStatsMarkup(
+              report,
+              "all-report-stats",
+              false
+            )
+          : ""
+      }
+
       <textarea id="copy-plain" class="copy-buffer" aria-hidden="true">${esc(plain)}</textarea>
       <textarea id="copy-nodeseek" class="copy-buffer" aria-hidden="true">${esc(nodeSeek)}</textarea>
       <textarea id="copy-markdown" class="copy-buffer" aria-hidden="true">${esc(markdown)}</textarea>
@@ -630,7 +808,7 @@ function notFoundPage() {
 
 function pageShell(body, title) {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>${esc(title)}</title><style>
-  :root{color-scheme:dark;--bg:#0d0f12;--surface:#14171c;--surface2:#191d23;--line:#2a3038;--line2:#363d47;--text:#e7ebf0;--muted:#8c96a3;--soft:#b7c0cb;--green:#42d392;--green-bg:#14261f;--yellow:#f0c66b;--yellow-bg:#292217;--blue:#73a7ff;--shadow:0 18px 50px rgba(0,0,0,.24)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.sitebar{border-bottom:1px solid var(--line);background:rgba(13,15,18,.92);position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}.sitebar-inner{height:56px;width:min(1080px,calc(100% - 28px));margin:0 auto;display:flex;align-items:center;justify-content:space-between}.wordmark{color:var(--text);font-weight:850;letter-spacing:-.02em;text-decoration:none;font-size:17px}.wordmark:before{content:"●";color:var(--green);font-size:10px;margin-right:9px;vertical-align:2px}.repo-link{color:var(--muted);text-decoration:none;font-size:13px}.repo-link:hover{color:var(--text)}.viewer{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:34px 0 26px}.viewer-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.kicker{font:750 11px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);letter-spacing:.13em;text-transform:uppercase}.viewer-head h1,.landing h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.045em;line-height:1.05;margin:9px 0 8px}.meta{margin:0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.state{flex:none;border:1px solid #23543f;background:var(--green-bg);color:var(--green);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:750}.state.warn{border-color:#5b4924;background:var(--yellow-bg);color:var(--yellow)}.actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);margin-bottom:18px}.action{appearance:none;text-align:left;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text);padding:13px 15px;cursor:pointer;min-height:64px}.action:last-child{border-right:0}.action:hover{background:var(--surface2)}.action strong,.action span{display:block}.action strong{font-size:13px}.action span{font-size:11px;color:var(--muted);margin-top:3px}.tabs{display:flex;flex-wrap:wrap;gap:7px;overflow:visible;padding:0 0 10px}.tabs::-webkit-scrollbar{display:none}.tab{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;white-space:nowrap;font-weight:700;font-size:12px;cursor:pointer}.tab:hover{border-color:var(--line2);color:var(--text)}.tab.active{background:var(--text);border-color:var(--text);color:#0d0f12}.report-document{border:1px solid var(--line);border-radius:12px;background:#101216;box-shadow:var(--shadow);overflow:hidden}.report-section{padding:0 18px}.report-section+.report-section{border-top:1px solid var(--line)}.section-head{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(42,48,56,.55)}.section-no{font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#596370}.section-head h2{font-size:14px;margin:0;letter-spacing:.01em}.section-source{margin-left:auto;color:var(--muted);font:10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.report-output{margin:0;padding:17px 0 23px;overflow-x:auto;white-space:pre;tab-size:4;color:#d8dee8;font:12px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace}.report-output.empty-output{min-height:58px}.report-section[hidden]{display:none}.empty{padding:40px;text-align:center;color:var(--muted)}.copy-buffer{position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none}.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,18px);background:#eef2f6;color:#111827;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:750;opacity:0;pointer-events:none;transition:.18s ease;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.footer{width:min(1080px,calc(100% - 28px));margin:0 auto;border-top:1px solid var(--line);padding:20px 0 32px;color:#65707d;text-align:center;font-size:11px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:16px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--surface);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.viewer{width:calc(100% - 16px);padding-top:23px}.sitebar-inner,.footer{width:calc(100% - 20px)}.viewer-head{align-items:flex-start;flex-direction:column;gap:12px}.actions{grid-template-columns:repeat(2,minmax(0,1fr))}.action:nth-child(2){border-right:0}.action:nth-child(-n+2){border-bottom:1px solid var(--line)}.report-section{padding:0 10px}.section-head{height:47px}.report-output{font-size:10.5px;line-height:1.45;padding-top:14px;padding-bottom:18px}.tabs{margin-left:-2px}.landing{padding-top:10vh}}@media(max-width:430px){.actions{box-shadow:none}.action{padding:11px 12px;min-height:58px}.action strong{font-size:12px}.action span{font-size:10px}.viewer-head h1{font-size:34px}}
+  :root{color-scheme:dark;--bg:#0d0f12;--surface:#14171c;--surface2:#191d23;--line:#2a3038;--line2:#363d47;--text:#e7ebf0;--muted:#8c96a3;--soft:#b7c0cb;--green:#42d392;--green-bg:#14261f;--yellow:#f0c66b;--yellow-bg:#292217;--blue:#73a7ff;--shadow:0 18px 50px rgba(0,0,0,.24)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.sitebar{border-bottom:1px solid var(--line);background:rgba(13,15,18,.92);position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}.sitebar-inner{height:56px;width:min(1080px,calc(100% - 28px));margin:0 auto;display:flex;align-items:center;justify-content:space-between}.wordmark{color:var(--text);font-weight:850;letter-spacing:-.02em;text-decoration:none;font-size:17px}.wordmark:before{content:"●";color:var(--green);font-size:10px;margin-right:9px;vertical-align:2px}.repo-link{color:var(--muted);text-decoration:none;font-size:13px}.repo-link:hover{color:var(--text)}.viewer{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:34px 0 26px}.viewer-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.kicker{font:750 11px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);letter-spacing:.13em;text-transform:uppercase}.viewer-head h1,.landing h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.045em;line-height:1.05;margin:9px 0 8px}.meta{margin:0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.state{flex:none;border:1px solid #23543f;background:var(--green-bg);color:var(--green);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:750}.state.warn{border-color:#5b4924;background:var(--yellow-bg);color:var(--yellow)}.actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);margin-bottom:18px}.action{appearance:none;text-align:left;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text);padding:13px 15px;cursor:pointer;min-height:64px}.action:last-child{border-right:0}.action:hover{background:var(--surface2)}.action strong,.action span{display:block}.action strong{font-size:13px}.action span{font-size:11px;color:var(--muted);margin-top:3px}.tabs{display:flex;flex-wrap:wrap;gap:7px;overflow:visible;padding:0 0 10px}.tabs::-webkit-scrollbar{display:none}.tab{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;white-space:nowrap;font-weight:700;font-size:12px;cursor:pointer}.tab:hover{border-color:var(--line2);color:var(--text)}.tab.active{background:var(--text);border-color:var(--text);color:#0d0f12}.report-document{border:1px solid var(--line);border-radius:12px;background:#101216;box-shadow:var(--shadow);overflow:hidden}.report-section{padding:0 18px}.report-section+.report-section{border-top:1px solid var(--line)}.section-head{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(42,48,56,.55)}.section-no{font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#596370}.section-head h2{font-size:14px;margin:0;letter-spacing:.01em}.section-source{margin-left:auto;color:var(--muted);font:10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.report-output{margin:0;padding:17px 0 23px;overflow-x:auto;white-space:pre;tab-size:4;color:#d8dee8;font:12px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace}.report-output.empty-output{min-height:58px}.report-section[hidden]{display:none}.report-stats{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:14px 18px;text-align:center;color:var(--muted);font:600 12px/1.9 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.all-report-stats{margin-top:14px}.section-report-stats{margin:0 0 18px}.report-stats[hidden]{display:none}.stats-gap{display:inline-block;width:24px}.empty{padding:40px;text-align:center;color:var(--muted)}.copy-buffer{position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none}.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,18px);background:#eef2f6;color:#111827;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:750;opacity:0;pointer-events:none;transition:.18s ease;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.footer{width:min(1080px,calc(100% - 28px));margin:0 auto;border-top:1px solid var(--line);padding:20px 0 32px;color:#65707d;text-align:center;font-size:11px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:16px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--surface);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.viewer{width:calc(100% - 16px);padding-top:23px}.sitebar-inner,.footer{width:calc(100% - 20px)}.viewer-head{align-items:flex-start;flex-direction:column;gap:12px}.actions{grid-template-columns:repeat(2,minmax(0,1fr))}.action:nth-child(2){border-right:0}.action:nth-child(-n+2){border-bottom:1px solid var(--line)}.report-section{padding:0 10px}.section-head{height:47px}.report-output{font-size:10.5px;line-height:1.45;padding-top:14px;padding-bottom:18px}.tabs{margin-left:-2px}.landing{padding-top:10vh}}@media(max-width:430px){.actions{box-shadow:none}.action{padding:11px 12px;min-height:58px}.action strong{font-size:12px}.action span{font-size:10px}.viewer-head h1{font-size:34px}}
   </style></head><body>${body}</body></html>`;
 }
 
@@ -638,6 +816,10 @@ const REPORT_JS = `(() => {
   const tabs = Array.from(document.querySelectorAll('[data-report-tab]'));
   const sections = Array.from(document.querySelectorAll('[data-section]'));
   const toast = document.querySelector('.toast');
+
+  const allStats = document.querySelector(
+    '[data-report-stats="all-report-stats"]'
+  );
   let toastTimer = 0;
 
   function notify(message) {
@@ -655,8 +837,27 @@ const REPORT_JS = `(() => {
       tab.setAttribute('aria-selected', active ? 'true' : 'false');
     });
     sections.forEach((section) => {
-      section.hidden = key !== 'all' && section.dataset.section !== key;
+      const selected =
+        key === 'all' ||
+        section.dataset.section === key;
+
+      section.hidden = !selected;
+
+      const stats = section.querySelector(
+        '[data-report-stats="section-report-stats"]'
+      );
+
+      if (stats) {
+        stats.hidden =
+          key === 'all' ||
+          section.dataset.section !== key ||
+          section.dataset.hasContent !== '1';
+      }
     });
+
+    if (allStats) {
+      allStats.hidden = key !== 'all';
+    }
   }
 
   tabs.forEach((tab) => tab.addEventListener('click', () => selectTab(tab.dataset.reportTab)));
