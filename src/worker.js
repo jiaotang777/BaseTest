@@ -330,7 +330,7 @@ function javascript(value) {
     status: 200,
     headers: securityHeaders({
       "content-type": "text/javascript; charset=utf-8",
-      "cache-control": "public, max-age=3600",
+      "cache-control": "no-store",
     }),
   });
 }
@@ -808,7 +808,7 @@ function reportPage(report) {
     </main>
 
     <footer class="footer">BaseTest · 结果直接由 basetest.aniya.site 展示</footer>
-    <script src="/assets/report.js" defer></script>
+    <script src="/assets/report.js?v=044" defer></script>
   `, "BaseTest Report");
 }
 
