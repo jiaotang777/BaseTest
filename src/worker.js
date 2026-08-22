@@ -807,7 +807,7 @@ function reportPage(report) {
     </main>
 
     <footer class="footer">BaseTest · 结果直接由 basetest.aniya.site 展示</footer>
-    <script src="/assets/report.js?v=044" defer></script>
+    <script src="/assets/report.js?v=045" defer></script>
   `, "BaseTest Report");
 }
 
@@ -861,9 +861,13 @@ const REPORT_JS = `(() => {
     let visibleSections = 0;
 
     sections.forEach((section) => {
+      const hasContent =
+        section.dataset.hasContent === '1';
+
       const selected =
-        key === 'all' ||
-        section.dataset.section === key;
+        key === 'all'
+          ? hasContent
+          : section.dataset.section === key;
 
       section.hidden = !selected;
 
@@ -888,13 +892,15 @@ const REPORT_JS = `(() => {
 
     if (reportDocument) {
       reportDocument.hidden =
-        key === 'all'
-          ? sections.length === 0
-          : visibleSections === 0;
+        visibleSections === 0;
     }
   }
 
   tabs.forEach((tab) => tab.addEventListener('click', () => selectTab(tab.dataset.reportTab)));
+
+  // 页面第一次打开时就按“全部”规则过滤：
+  // 只显示真正有数据的板块。
+  selectTab('all');
 
   async function copyText(value) {
     if (navigator.clipboard && window.isSecureContext) {
