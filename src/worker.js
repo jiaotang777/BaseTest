@@ -1675,11 +1675,27 @@ function buildNodeSeekReport(
 
   const addAnsi = (
     title,
-    value
+    value,
+    cleanNodeSeparators = false
   ) => {
-    const body =
+    let body =
       String(value || "")
-        .replace(/\r/g, "")
+        .replace(/\r/g, "");
+
+    if (cleanNodeSeparators) {
+      body =
+        body
+          .split("\n")
+          .filter(
+            (line) =>
+              !isNodeQualitySeparatorLine(line)
+          )
+          .join("\n");
+    }
+
+    body =
+      body
+        .replace(/\n{3,}/g, "\n\n")
         .trim();
 
     if (!body) {
@@ -1699,7 +1715,8 @@ ${body}
   // 基本信息：保留 NodeQuality 原始 ANSI。
   addAnsi(
     "💻基本信息",
-    node.basic
+    node.basic,
+    true
   );
 
 
@@ -1718,7 +1735,8 @@ ${body}
 
   addAnsi(
     "🎬IP质量",
-    ipAnsi
+    ipAnsi,
+    true
   );
 
 
@@ -1742,7 +1760,8 @@ ${body}
 
   addAnsi(
     "🌐网络质量",
-    networkAnsi
+    networkAnsi,
+    true
   );
 
 
@@ -1765,7 +1784,8 @@ ${body}
 
   addAnsi(
     "📍回程路由",
-    routeAnsi
+    routeAnsi,
+    true
   );
 
 
