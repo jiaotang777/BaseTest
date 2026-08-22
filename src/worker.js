@@ -497,160 +497,40 @@ function isNodeSponsorNoise(value) {
   return false;
 }
 
-function cleanNodeSection(value, kind) {
-  const lines = String(value || "").split("\n");
-
-  const startPatterns = {
-    basic:
-      /(?:硬件质量体检报告|Hardware\s+Quality.*Report)/i,
-
-    ip:
-      /(?:IP质量体检报告|IP\s+Quality.*Report)/i,
-
-    network:
-      /(?:网络质量体检报告|Network\s+Quality.*Report)/i,
-
-    route:
-      /(?:网络质量体检报告|Network\s+Quality.*Report)/i,
-  };
-
-  const pattern = startPatterns[kind];
-
-  if (!pattern) {
-    return "";
-  }
-
-  let start = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    if (pattern.test(stripAnsi(lines[i]))) {
-      start = i;
-      break;
-    }
-  }
-
-  // 没找到真正报告标题：
-  // 说明这项没有产生有效测试结果。
-  if (start < 0) {
-    return "";
-  }
-
-  // 把报告标题上面那条分隔线一起保留。
-  if (start > 0) {
-    const previous =
-      stripAnsi(lines[start - 1]).trim();
-
-    if (/^[+*#=_-]{20,}$/.test(previous)) {
-      start -= 1;
-    }
-  }
-
-  const result = [];
-
-  for (let i = start; i < lines.length; i++) {
-    const rawLine = lines[i];
-    const plain =
-      stripAnsi(rawLine).trim();
-
-    // 上游测试统计到这里就结束。
-    // BaseTest 使用自己的报告时间和计数。
-    if (
-      /^今日(?:硬件|IP|网络).*检测量\s*[:：]/i
-        .test(plain)
-    ) {
-      break;
-    }
-
-    if (/^总检测量\s*[:：]/i.test(plain)) {
-      break;
-    }
-
-    if (/^报告链接\s*[:：]/i.test(plain)) {
-      break;
-    }
-
-    if (
-      /^(安装后清理|清理中，请稍后|Clean Up after Installation|Cleaning,\s*please wait)/i
-        .test(plain)
-    ) {
-      break;
-    }
-
-    if (/nodequality\.com\/r\//i.test(plain)) {
-      break;
-    }
-
-    // 防止赞助商 ASCII 混入正式内容。
-    if (isNodeSponsorNoise(rawLine)) {
-      continue;
-    }
-
-    result.push(
-      rawLine.replace(/\s+$/, "")
-    );
-  }
-
-  while (
-    result.length &&
-    !stripAnsi(result[0]).trim()
-  ) {
-    result.shift();
-  }
-
-  while (
-    result.length &&
-    !stripAnsi(result[result.length - 1]).trim()
-  ) {
-    result.pop();
-  }
-
-  return result.join("\n").trim();
-}
-
 function splitNodeQuality(log) {
-  const buckets = {
-    basic: [],
-    ip: [],
-    network: [],
-    route: [],
+  const reports = [];
+  let current = null;
+
+  const typeOf = (line) => {
+    if (
+      /(?:硬件质量体检报告|HARDWARE\s+QUALITY.*REPORT)/i.test(line)
+    ) return "basic";
+
+    if (
+      /(?:IP质量体检报告(?:\(Lite\))?|IP\s+QUALITY.*REPORT)/i.test(line)
+    ) return "ip";
+
+    if (
+      /(?:网络质量体检报告|NET(?:WORK)?\s+QUALITY.*REPORT)/i.test(line)
+    ) return "net";
+
+    return "";
   };
 
-  const raw = String(log || "");
-  let current = "";
+  for (const rawLine of String(log || "").split("\n")) {
+    const line = stripAnsi(rawLine).trim();
+    const type = typeOf(line);
 
-  for (const rawLine of raw.split("\n")) {
-    const line =
-      stripAnsi(rawLine).trim();
+    if (type) {
+      if (current) {
+        reports.push(current);
+      }
 
-    if (
-      /^(正在运行硬件质量测试|Running\s+Hardware\s+Quality\s+Test)/i
-        .test(line)
-    ) {
-      current = "basic";
-      continue;
-    }
+      current = {
+        type,
+        lines: [rawLine],
+      };
 
-    if (
-      /^(正在运行\s*IP\s*质量测试|Running\s+IP\s+Quality\s+Test)/i
-        .test(line)
-    ) {
-      current = "ip";
-      continue;
-    }
-
-    if (
-      /^(正在运行网络质量测试|Running\s+Network\s+Quality\s+Test)/i
-        .test(line)
-    ) {
-      current = "network";
-      continue;
-    }
-
-    if (
-      /^(正在运行回程路由追踪|Running\s+Backroute\s+Trace)/i
-        .test(line)
-    ) {
-      current = "route";
       continue;
     }
 
@@ -658,29 +538,107 @@ function splitNodeQuality(log) {
       continue;
     }
 
-    buckets[current].push(rawLine);
+    if (isNodeSponsorNoise(rawLine)) {
+      continue;
+    }
+
+    if (
+      /^(?:正在运行|Running\s+)/i.test(line) ||
+      /^(?:报告链接|Report Link)\s*[:：]/i.test(line) ||
+      /nodequality\.com\/r\//i.test(line) ||
+      /Report\.Check\.Place\//i.test(line)
+    ) {
+      continue;
+    }
+
+    if (
+      /^今日(?:硬件|IP|网络).*检测量\s*[:：]/i.test(line) ||
+      /^(?:总检测量|IP Checks Today|Network Checks Today|Total)\s*[:：]?/i.test(line) ||
+      /^(?:感谢使用xy系列脚本|Thanks for running xy scripts)/i.test(line)
+    ) {
+      continue;
+    }
+
+    if (
+      /^(?:安装后清理|清理中，请稍后|Clean Up after Installation|Cleaning,\s*please wait)/i.test(line)
+    ) {
+      continue;
+    }
+
+    current.lines.push(rawLine);
   }
 
+  if (current) {
+    reports.push(current);
+  }
+
+  const textOf = (report) =>
+    report.lines
+      .join("\n")
+      .trim();
+
+  const basic = reports
+    .filter((x) => x.type === "basic")
+    .map(textOf)
+    .join("\n\n");
+
+  const ipReports = reports
+    .filter((x) => x.type === "ip")
+    .map(textOf);
+
+  const netReports = reports
+    .filter((x) => x.type === "net")
+    .map(textOf);
+
+  const ipv4 = [];
+  const ipv6 = [];
+
+  for (const report of ipReports) {
+    const first = stripAnsi(report)
+      .split("\n")
+      .find((line) =>
+        /IP质量体检报告|IP\s+QUALITY/i.test(line)
+      ) || "";
+
+    const match = first.match(/[:：]\s*(.+)$/);
+    const address = match ? match[1].trim() : "";
+
+    if (address.includes(":")) {
+      ipv6.push(report);
+    } else {
+      ipv4.push(report);
+    }
+  }
+
+  if (
+    ipReports.length >= 2 &&
+    ipv6.length === 0
+  ) {
+    ipv4.length = 0;
+    ipv4.push(ipReports[0]);
+    ipv6.push(...ipReports.slice(1));
+  }
+
+  const network =
+    netReports.find((report) =>
+      /(?:一、BGP信息|1\.\s*BGP Information|二、本地状态|2\.\s*Local Status|3\.\s*Connectivity)/i
+        .test(stripAnsi(report))
+    ) || "";
+
+  const route =
+    netReports.find((report) =>
+      report !== network &&
+      /(?:五、三网回程路由|5\.\s*Route to China Mainland)/i
+        .test(stripAnsi(report))
+    ) || "";
+
   return {
-    basic: cleanNodeSection(
-      buckets.basic.join("\n"),
-      "basic"
-    ),
-
-    ip: cleanNodeSection(
-      buckets.ip.join("\n"),
-      "ip"
-    ),
-
-    network: cleanNodeSection(
-      buckets.network.join("\n"),
-      "network"
-    ),
-
-    route: cleanNodeSection(
-      buckets.route.join("\n"),
-      "route"
-    ),
+    basic,
+    ipv4: ipv4.join("\n\n"),
+    ipv6: ipv6.join("\n\n"),
+    ip: ipReports.join("\n\n"),
+    network,
+    route,
   };
 }
 
@@ -839,6 +797,69 @@ function sectionMarkup(
   `;
 }
 
+function ipQualityMarkup(ipv4, ipv6, index, report) {
+  const v4 = String(ipv4 || "").trim();
+  const v6 = String(ipv6 || "").trim();
+  const hasContent = Boolean(v4 || v6);
+  const cards = [];
+
+  if (v4) {
+    cards.push(`
+      <div class="ip-subcard">
+        <div class="ip-subhead">
+          <span>IPv4</span>
+          <strong>IPv4 质量检测</strong>
+        </div>
+        <pre class="report-output ip-suboutput">${ansiToHtml(v4)}</pre>
+      </div>
+    `);
+  }
+
+  if (v6) {
+    cards.push(`
+      <div class="ip-subcard">
+        <div class="ip-subhead">
+          <span>IPv6</span>
+          <strong>IPv6 质量检测</strong>
+        </div>
+        <pre class="report-output ip-suboutput">${ansiToHtml(v6)}</pre>
+      </div>
+    `);
+  }
+
+  const stats = hasContent
+    ? reportStatsMarkup(
+        report,
+        "section-report-stats",
+        true
+      )
+    : "";
+
+  return `
+    <section
+      class="report-section"
+      data-section="ip"
+      data-has-content="${hasContent ? "1" : "0"}"
+    >
+      <div class="section-head">
+        <span class="section-no">
+          ${String(index).padStart(2, "0")}
+        </span>
+        <h2>IP质量</h2>
+        <span class="section-source">NodeQuality</span>
+      </div>
+
+      ${
+        hasContent
+          ? `<div class="ip-sublist">${cards.join("")}</div>`
+          : `<pre class="report-output empty-output"></pre>`
+      }
+
+      ${stats}
+    </section>
+  `;
+}
+
 function reportPage(report) {
   const nq = report.nodeQuality || {};
   const tq = report.tcpQuality || {};
@@ -847,7 +868,16 @@ function reportPage(report) {
 
   const parts = {
     basic: node.basic,
-    ip: node.ip,
+    ip: [
+      node.ipv4
+        ? `【IPv4 质量检测】\n${node.ipv4}`
+        : "",
+      node.ipv6
+        ? `【IPv6 质量检测】\n${node.ipv6}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     network: node.network,
     route: node.route,
 
@@ -901,15 +931,25 @@ function reportPage(report) {
 
   const sections = sectionDefs
     .map(
-      ([key, title, source, value], index) =>
-        sectionMarkup(
+      ([key, title, source, value], index) => {
+        if (key === "ip") {
+          return ipQualityMarkup(
+            node.ipv4,
+            node.ipv6,
+            index + 1,
+            report
+          );
+        }
+
+        return sectionMarkup(
           key,
           title,
           source,
           value,
           index + 1,
           report
-        )
+        );
+      }
     )
     .join("");
 
@@ -996,7 +1036,7 @@ function notFoundPage() {
 
 function pageShell(body, title) {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>${esc(title)}</title><style>
-  :root{color-scheme:dark;--bg:#0d0f12;--surface:#14171c;--surface2:#191d23;--line:#2a3038;--line2:#363d47;--text:#e7ebf0;--muted:#8c96a3;--soft:#b7c0cb;--green:#42d392;--green-bg:#14261f;--yellow:#f0c66b;--yellow-bg:#292217;--blue:#73a7ff;--shadow:0 18px 50px rgba(0,0,0,.24)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.sitebar{border-bottom:1px solid var(--line);background:rgba(13,15,18,.92);position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}.sitebar-inner{height:56px;width:min(1080px,calc(100% - 28px));margin:0 auto;display:flex;align-items:center;justify-content:space-between}.wordmark{color:var(--text);font-weight:850;letter-spacing:-.02em;text-decoration:none;font-size:17px}.wordmark:before{content:"●";color:var(--green);font-size:10px;margin-right:9px;vertical-align:2px}.repo-link{color:var(--muted);text-decoration:none;font-size:13px}.repo-link:hover{color:var(--text)}.viewer{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:34px 0 26px}.viewer-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.kicker{font:750 11px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);letter-spacing:.13em;text-transform:uppercase}.viewer-head h1,.landing h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.045em;line-height:1.05;margin:9px 0 8px}.meta{margin:0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.state{flex:none;border:1px solid #23543f;background:var(--green-bg);color:var(--green);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:750}.state.warn{border-color:#5b4924;background:var(--yellow-bg);color:var(--yellow)}.actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);margin-bottom:18px}.action{appearance:none;text-align:left;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text);padding:13px 15px;cursor:pointer;min-height:64px}.action:last-child{border-right:0}.action:hover{background:var(--surface2)}.action strong,.action span{display:block}.action strong{font-size:13px}.action span{font-size:11px;color:var(--muted);margin-top:3px}.tabs{display:flex;flex-wrap:wrap;gap:7px;overflow:visible;padding:0 0 10px}.tabs::-webkit-scrollbar{display:none}.tab{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;white-space:nowrap;font-weight:700;font-size:12px;cursor:pointer}.tab:hover{border-color:var(--line2);color:var(--text)}.tab.active{background:var(--text);border-color:var(--text);color:#0d0f12}.report-document{border:1px solid var(--line);border-radius:12px;background:#101216;box-shadow:var(--shadow);overflow:hidden}.report-section{padding:0 18px}.report-section+.report-section{border-top:1px solid var(--line)}.section-head{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(42,48,56,.55)}.section-no{font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#596370}.section-head h2{font-size:14px;margin:0;letter-spacing:.01em}.section-source{margin-left:auto;color:var(--muted);font:10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.report-output{margin:0;padding:17px 0 23px;overflow-x:auto;white-space:pre;tab-size:4;color:#d8dee8;font:12px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace}.report-output.empty-output{min-height:58px}.report-section[hidden]{display:none}.report-document[hidden]{display:none}.report-document.empty-view{width:100%;margin-left:0;margin-right:0}.report-document.empty-view .report-section:not([hidden]){display:flex;flex-direction:column;min-height:240px}.report-document.empty-view .report-output{flex:1;min-height:170px;padding-bottom:14px}.report-stats{border-top:1px solid var(--line);padding:14px 18px 16px;text-align:center;color:var(--muted);font:600 12px/1.9 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.all-report-stats{margin:0}.section-report-stats{margin:0 -18px}.report-stats[hidden]{display:none}.stats-gap{display:inline-block;width:24px}.empty{padding:40px;text-align:center;color:var(--muted)}.copy-buffer{position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none}.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,18px);background:#eef2f6;color:#111827;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:750;opacity:0;pointer-events:none;transition:.18s ease;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.footer{width:min(1080px,calc(100% - 28px));margin:0 auto;border-top:1px solid var(--line);padding:20px 0 32px;color:#65707d;text-align:center;font-size:11px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:16px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--surface);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.report-document.empty-view{width:100%}.report-document.empty-view .report-section:not([hidden]){min-height:240px}.report-document.empty-view .report-output{min-height:170px}.viewer{width:calc(100% - 16px);padding-top:23px}.sitebar-inner,.footer{width:calc(100% - 20px)}.viewer-head{align-items:flex-start;flex-direction:column;gap:12px}.actions{grid-template-columns:repeat(2,minmax(0,1fr))}.action:nth-child(2){border-right:0}.action:nth-child(-n+2){border-bottom:1px solid var(--line)}.report-section{padding:0 10px}.section-report-stats{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.section-head{height:47px}.report-output{font-size:10.5px;line-height:1.45;padding-top:14px;padding-bottom:18px}.tabs{margin-left:-2px}.landing{padding-top:10vh}}@media(max-width:430px){.actions{box-shadow:none}.action{padding:11px 12px;min-height:58px}.action strong{font-size:12px}.action span{font-size:10px}.viewer-head h1{font-size:34px}}
+  :root{color-scheme:dark;--bg:#0d0f12;--surface:#14171c;--surface2:#191d23;--line:#2a3038;--line2:#363d47;--text:#e7ebf0;--muted:#8c96a3;--soft:#b7c0cb;--green:#42d392;--green-bg:#14261f;--yellow:#f0c66b;--yellow-bg:#292217;--blue:#73a7ff;--shadow:0 18px 50px rgba(0,0,0,.24)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.sitebar{border-bottom:1px solid var(--line);background:rgba(13,15,18,.92);position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}.sitebar-inner{height:56px;width:min(1080px,calc(100% - 28px));margin:0 auto;display:flex;align-items:center;justify-content:space-between}.wordmark{color:var(--text);font-weight:850;letter-spacing:-.02em;text-decoration:none;font-size:17px}.wordmark:before{content:"●";color:var(--green);font-size:10px;margin-right:9px;vertical-align:2px}.repo-link{color:var(--muted);text-decoration:none;font-size:13px}.repo-link:hover{color:var(--text)}.viewer{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:34px 0 26px}.viewer-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.kicker{font:750 11px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);letter-spacing:.13em;text-transform:uppercase}.viewer-head h1,.landing h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.045em;line-height:1.05;margin:9px 0 8px}.meta{margin:0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.state{flex:none;border:1px solid #23543f;background:var(--green-bg);color:var(--green);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:750}.state.warn{border-color:#5b4924;background:var(--yellow-bg);color:var(--yellow)}.actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);margin-bottom:18px}.action{appearance:none;text-align:left;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text);padding:13px 15px;cursor:pointer;min-height:64px}.action:last-child{border-right:0}.action:hover{background:var(--surface2)}.action strong,.action span{display:block}.action strong{font-size:13px}.action span{font-size:11px;color:var(--muted);margin-top:3px}.tabs{display:flex;flex-wrap:wrap;gap:7px;overflow:visible;padding:0 0 10px}.tabs::-webkit-scrollbar{display:none}.tab{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;white-space:nowrap;font-weight:700;font-size:12px;cursor:pointer}.tab:hover{border-color:var(--line2);color:var(--text)}.tab.active{background:var(--text);border-color:var(--text);color:#0d0f12}.report-document{border:1px solid var(--line);border-radius:12px;background:#101216;box-shadow:var(--shadow);overflow:hidden}.report-section{padding:0 18px}.report-section+.report-section{border-top:1px solid var(--line)}.section-head{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(42,48,56,.55)}.section-no{font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#596370}.section-head h2{font-size:14px;margin:0;letter-spacing:.01em}.section-source{margin-left:auto;color:var(--muted);font:10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.report-output{margin:0;padding:17px 0 23px;overflow-x:auto;white-space:pre;tab-size:4;color:#d8dee8;font:12px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace}.ip-sublist{padding:16px 0 20px;display:grid;gap:14px}.ip-subcard{border:1px solid var(--line2);border-radius:10px;overflow:hidden;background:#0d1014}.ip-subhead{min-height:42px;padding:0 13px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}.ip-subhead span{font:750 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);border:1px solid #23543f;background:var(--green-bg);border-radius:999px;padding:5px 8px}.ip-subhead strong{font-size:12px}.ip-suboutput{padding:16px 13px 19px}.report-output.empty-output{min-height:58px}.report-section[hidden]{display:none}.report-document[hidden]{display:none}.report-document.empty-view{width:100%;margin-left:0;margin-right:0}.report-document.empty-view .report-section:not([hidden]){display:flex;flex-direction:column;min-height:240px}.report-document.empty-view .report-output{flex:1;min-height:170px;padding-bottom:14px}.report-stats{border-top:1px solid var(--line);padding:14px 18px 16px;text-align:center;color:var(--muted);font:600 12px/1.9 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.all-report-stats{margin:0}.section-report-stats{margin:0 -18px}.report-stats[hidden]{display:none}.stats-gap{display:inline-block;width:24px}.empty{padding:40px;text-align:center;color:var(--muted)}.copy-buffer{position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none}.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,18px);background:#eef2f6;color:#111827;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:750;opacity:0;pointer-events:none;transition:.18s ease;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.footer{width:min(1080px,calc(100% - 28px));margin:0 auto;border-top:1px solid var(--line);padding:20px 0 32px;color:#65707d;text-align:center;font-size:11px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:16px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--surface);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.report-document.empty-view{width:100%}.report-document.empty-view .report-section:not([hidden]){min-height:240px}.report-document.empty-view .report-output{min-height:170px}.viewer{width:calc(100% - 16px);padding-top:23px}.sitebar-inner,.footer{width:calc(100% - 20px)}.viewer-head{align-items:flex-start;flex-direction:column;gap:12px}.actions{grid-template-columns:repeat(2,minmax(0,1fr))}.action:nth-child(2){border-right:0}.action:nth-child(-n+2){border-bottom:1px solid var(--line)}.report-section{padding:0 10px}.section-report-stats{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.section-head{height:47px}.report-output{font-size:10.5px;line-height:1.45;padding-top:14px;padding-bottom:18px}.tabs{margin-left:-2px}.landing{padding-top:10vh}}@media(max-width:430px){.actions{box-shadow:none}.action{padding:11px 12px;min-height:58px}.action strong{font-size:12px}.action span{font-size:10px}.viewer-head h1{font-size:34px}}
   </style></head><body>${body}</body></html>`;
 }
 
