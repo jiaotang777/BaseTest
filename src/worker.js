@@ -1603,6 +1603,43 @@ function normalizePlain(value) {
     .trim();
 }
 
+function nodeQualityPlainText(value) {
+  const lines =
+    String(value || "")
+      .replace(/\r/g, "")
+      .split("\n");
+
+  const cleaned = [];
+
+  for (const rawLine of lines) {
+    // 与网页 baseNodeQualityMarkup 保持一致：
+    // NodeQuality 的纯视觉分隔线不进入正文。
+    if (isNodeQualitySeparatorLine(rawLine)) {
+      continue;
+    }
+
+    const plain =
+      stripAnsi(rawLine).trim();
+
+    const isMetaLine =
+      isNodeQualityTitleLine(rawLine) ||
+      /^https?:\/\/github\.com\/xykt\//i.test(plain) ||
+      /^bash\s+<\(curl\b/i.test(plain) ||
+      /^(?:报告时间|Report Time)\s*[:：]/i.test(plain);
+
+    cleaned.push(
+      isMetaLine
+        ? trimAnsiLine(rawLine)
+        : rawLine
+    );
+  }
+
+  return normalizePlain(
+    cleaned.join("\n")
+  );
+}
+
+
 function buildPlainReport(parts) {
   const blocks = [];
 
@@ -1800,6 +1837,29 @@ function reportPage(report) {
   };
   const copyParts = {
     ...parts,
+
+    basic:
+      nodeQualityPlainText(
+        node.basic
+      ),
+
+    ip: [
+      node.ipv4
+        ? `【IPv4 质量检测】
+${nodeQualityPlainText(
+            node.ipv4
+          )}`
+        : "",
+
+      node.ipv6
+        ? `【IPv6 质量检测】
+${nodeQualityPlainText(
+            node.ipv6
+          )}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
 
     network:
       networkPlainText(node.network),
