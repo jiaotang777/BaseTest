@@ -543,17 +543,44 @@ function countLikelyIPv6(text) {
 function detectRouteReportFamily(value, index = 0, total = 1) {
   const plain = stripAnsi(String(value || ""));
 
-  if (/(^|\n)\s*IPv4\b/i.test(plain)) return "IPv4";
-  if (/(^|\n)\s*IPv6\b/i.test(plain)) return "IPv6";
+  // 只根据这份报告自己的标题 IP 判断协议族。
+  // 不再扫描下面的路由正文，因为正文可能同时包含 IPv4 / IPv6 地址。
+  const titleLine =
+    plain
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) =>
+        /^(?:网络质量体检报告|NET(?:WORK)?\s+QUALITY.*REPORT)\s*[:：]/i
+          .test(line)
+      ) || "";
 
-  const v4Count = countMaskedIPv4(plain);
-  const v6Count = countLikelyIPv6(plain);
+  const match = titleLine.match(
+    /^(?:网络质量体检报告|NET(?:WORK)?\s+QUALITY.*REPORT)\s*[:：]\s*(.+)$/i
+  );
 
-  if (v4Count > v6Count) return "IPv4";
-  if (v6Count > v4Count) return "IPv6";
+  const address =
+    match
+      ? String(match[1] || "").trim()
+      : "";
 
+  // IPv4：172.127.*.* / 1.2.3.4
+  if (
+    address.includes(".") &&
+    !address.includes(":")
+  ) {
+    return "IPv4";
+  }
+
+  // IPv6：240e:904:800:*:*:*:*:* / 2600:1700:...
+  if (address.includes(":")) {
+    return "IPv6";
+  }
+
+  // 极端情况下标题无法识别，才按 NodeQuality 默认顺序兜底。
   if (total === 2) {
-    return index === 0 ? "IPv4" : "IPv6";
+    return index === 0
+      ? "IPv4"
+      : "IPv6";
   }
 
   return "IPv4";
