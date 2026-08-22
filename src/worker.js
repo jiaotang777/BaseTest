@@ -5,6 +5,9 @@ const MAX_LOG_CHARS = 2_000_000;
 const DEFAULT_REPORT_TTL_SECONDS = 60 * 60 * 24 * 90;
 const MIN_REPORT_TTL_SECONDS = 60;
 const MAX_REPORT_TTL_SECONDS = 60 * 60 * 24 * 365;
+const BASETEST_PUBLIC_ORIGIN = "https://basetest.aniya.site";
+const REPORT_IMAGE_VERSION = "0430";
+const REPORT_IMAGE_CACHE_SECONDS = 60 * 60 * 24 * 90;
 
 export default {
   async fetch(request, env) {
@@ -25,6 +28,23 @@ export default {
 
       if (request.method === "POST" && url.pathname === "/api/reports") {
         return await createReport(request, env, url.origin);
+      }
+
+      const imageMatch =
+        url.pathname.match(
+          /^\/r\/([A-Za-z0-9_-]{12,64})\.png$/
+        );
+
+      if (
+        request.method === "GET" &&
+        imageMatch
+      ) {
+        return await renderReportImage(
+          request,
+          env,
+          imageMatch[1],
+          url.searchParams.get("section") || ""
+        );
       }
 
       const match = url.pathname.match(/^\/r\/([A-Za-z0-9_-]{12,64})$/);
@@ -130,6 +150,327 @@ async function renderReport(env, id) {
     "x-robots-tag": "noindex, nofollow",
   });
 }
+
+
+const REPORT_IMAGE_SECTION_MAP = {
+  basic: "basic",
+  ip: "ip",
+  network: "network",
+  route: "route",
+
+  ipv4: "tcp-ipv4",
+  large4: "tcp-large4",
+  ipv6: "tcp-ipv6",
+  cernet: "tcp-education",
+  intl: "tcp-international",
+  speedtest: "tcp-speedtest",
+};
+
+
+function reportImageContent(
+  report,
+  section
+) {
+  const nq =
+    report.nodeQuality || {};
+
+  const tq =
+    report.tcpQuality || {};
+
+  const node =
+    splitNodeQuality(
+      nq.log || ""
+    );
+
+  const tcp =
+    splitTcpQuality(
+      tq.log || ""
+    );
+
+  const values = {
+    basic:
+      node.basic,
+
+    ip:
+      [
+        node.ipv4,
+        node.ipv6,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+
+    network:
+      node.network,
+
+    route:
+      node.route,
+
+    ipv4:
+      tcp.ipv4,
+
+    large4:
+      tcp.large4,
+
+    ipv6:
+      tcp.ipv6,
+
+    cernet:
+      tcp.education,
+
+    intl:
+      tcp.international,
+
+    speedtest:
+      tcp.speedtest,
+  };
+
+  return String(
+    values[section] || ""
+  ).trim();
+}
+
+
+async function renderReportImage(
+  request,
+  env,
+  id,
+  section
+) {
+  if (!env.REPORTS) {
+    return text(
+      "Storage is not configured",
+      500
+    );
+  }
+
+  if (!env.BROWSER) {
+    return text(
+      "Browser Run is not configured",
+      500
+    );
+  }
+
+  const pageSection =
+    REPORT_IMAGE_SECTION_MAP[
+      section
+    ];
+
+  if (!pageSection) {
+    return text(
+      "Invalid image section",
+      400
+    );
+  }
+
+  const cacheKey =
+    new Request(
+      request.url,
+      {
+        method: "GET",
+      }
+    );
+
+  try {
+    const cached =
+      await caches.default.match(
+        cacheKey
+      );
+
+    if (cached) {
+      return cached;
+    }
+  } catch {
+    // Cache failure does not block rendering.
+  }
+
+  const report =
+    await env.REPORTS.get(
+      `report:${id}`,
+      {
+        type: "json",
+      }
+    );
+
+  if (!report) {
+    return text(
+      "Report not found",
+      404
+    );
+  }
+
+  if (
+    !reportImageContent(
+      report,
+      section
+    )
+  ) {
+    return text(
+      "Section not found",
+      404
+    );
+  }
+
+  const captureCss = `
+<style id="basetest-capture-style">
+  .report-section {
+    display: none !important;
+  }
+
+  .report-section[
+    data-section="${pageSection}"
+  ] {
+    display: block !important;
+  }
+
+  .all-report-stats {
+    display: none !important;
+  }
+
+  .sitebar,
+  .viewer-head,
+  .actions,
+  .tabs,
+  .footer {
+    display: none !important;
+  }
+
+  .viewer {
+    width: 1080px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .report-document {
+    width: 1080px !important;
+    margin: 0 !important;
+  }
+</style>
+`;
+
+  const markup =
+    reportPage(report)
+      .replace(
+        "</head>",
+        `${captureCss}</head>`
+      );
+
+  let screenshot;
+
+  try {
+    screenshot =
+      await env.BROWSER.quickAction(
+        "screenshot",
+        {
+          html:
+            markup,
+
+          selector:
+            ".report-document",
+
+          viewport: {
+            width:
+              1200,
+
+            height:
+              900,
+
+            deviceScaleFactor:
+              1,
+          },
+
+          screenshotOptions: {
+            captureBeyondViewport:
+              true,
+          },
+        }
+      );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event:
+          "report_image_error",
+
+        reportId:
+          id,
+
+        section,
+
+        message:
+          String(error),
+      })
+    );
+
+    return text(
+      "Screenshot generation failed",
+      502
+    );
+  }
+
+  if (!screenshot.ok) {
+    const detail =
+      await screenshot
+        .text()
+        .catch(() => "");
+
+    console.error(
+      JSON.stringify({
+        event:
+          "report_image_failed",
+
+        reportId:
+          id,
+
+        section,
+
+        status:
+          screenshot.status,
+
+        detail:
+          detail.slice(0, 500),
+      })
+    );
+
+    return text(
+      `Screenshot generation failed (${screenshot.status})`,
+      502
+    );
+  }
+
+  const response =
+    new Response(
+      screenshot.body,
+      {
+        status: 200,
+
+        headers:
+          securityHeaders({
+            "content-type":
+              "image/png",
+
+            "content-disposition":
+              "inline",
+
+            "cache-control":
+              `public, max-age=${REPORT_IMAGE_CACHE_SECONDS}, immutable`,
+
+            "x-robots-tag":
+              "noindex, nofollow",
+          }),
+      }
+    );
+
+  try {
+    await caches.default.put(
+      cacheKey,
+      response.clone()
+    );
+  } catch {
+    // Image is still usable if Cache API is unavailable.
+  }
+
+  return response;
+}
+
 
 function normalizeReport(input) {
   return {
@@ -1661,9 +2002,156 @@ function buildPlainReport(parts) {
   return normalizePlain(blocks.join("\n\n"));
 }
 
-function buildNodeSeekReport(parts) {
-  const plain = buildPlainReport(parts);
-  return `[code]\n${plain}\n[/code]`;
+function buildNodeSeekReport(
+  node,
+  tcp,
+  report
+) {
+  const reportUrl =
+    `${BASETEST_PUBLIC_ORIGIN}/r/${report.id}`;
+
+  const imageUrl =
+    (section) =>
+      `${reportUrl}.png`
+      + `?section=${encodeURIComponent(
+          section
+        )}`
+      + `&v=${REPORT_IMAGE_VERSION}`;
+
+  const tabs = [];
+
+  const addAnsi = (
+    title,
+    value
+  ) => {
+    const body =
+      String(value || "")
+        .replace(/\r/g, "")
+        .trim();
+
+    if (!body) {
+      return;
+    }
+
+    tabs.push(
+      `::: tab-item ${title}
+\`\`\`ansi
+${body}
+\`\`\`
+:::`
+    );
+  };
+
+  const addImage = (
+    title,
+    section,
+    value
+  ) => {
+    if (
+      !String(value || "").trim()
+    ) {
+      return;
+    }
+
+    tabs.push(
+      `::: tab-item ${title}
+![](${imageUrl(section)})
+:::`
+    );
+  };
+
+
+  // NodeQuality 官方风格：
+  // 基本信息和 IP 质量使用 ANSI。
+  addAnsi(
+    "💻基本信息",
+    node.basic
+  );
+
+  const ipAnsi = [
+    node.ipv4
+      ? `【IPv4 质量检测】\n${node.ipv4}`
+      : "",
+
+    node.ipv6
+      ? `【IPv6 质量检测】\n${node.ipv6}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  addAnsi(
+    "🎬IP质量",
+    ipAnsi
+  );
+
+
+  // NodeQuality 图片板块。
+  addImage(
+    "🌐网络质量",
+    "network",
+    node.network
+  );
+
+  addImage(
+    "📍回程路由",
+    "route",
+    node.route
+  );
+
+
+  // TcpQuality 官方图片 Tab 风格。
+  addImage(
+    "IPv4回程",
+    "ipv4",
+    tcp.ipv4
+  );
+
+  addImage(
+    "IPv4大包回程",
+    "large4",
+    tcp.large4
+  );
+
+  addImage(
+    "IPv6回程",
+    "ipv6",
+    tcp.ipv6
+  );
+
+  addImage(
+    "教育网回程",
+    "cernet",
+    tcp.education
+  );
+
+  addImage(
+    "国际互联",
+    "intl",
+    tcp.international
+  );
+
+  addImage(
+    "单线程测速",
+    "speedtest",
+    tcp.speedtest
+  );
+
+
+  const body =
+    tabs.length
+      ? `:::: tabs
+${tabs.join("\n\n")}
+::::`
+      : "";
+
+  return [
+    body,
+
+    `[BaseTest链接](${reportUrl})`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function buildMarkdownReport(parts) {
@@ -1872,7 +2360,11 @@ ${nodeQualityPlainText(
     buildPlainReport(copyParts);
 
   const nodeSeek =
-    buildNodeSeekReport(copyParts);
+    buildNodeSeekReport(
+      node,
+      tcp,
+      report
+    );
 
   const markdown =
     buildMarkdownReport(copyParts);
@@ -1965,7 +2457,7 @@ ${nodeQualityPlainText(
 
       <section class="actions" aria-label="报告操作">
         <button type="button" class="action" data-copy-target="copy-plain"><strong>复制文本</strong><span>复制普通文本</span></button>
-        <button type="button" class="action" data-copy-target="copy-nodeseek"><strong>复制为NodeSeek格式</strong><span>论坛代码格式</span></button>
+        <button type="button" class="action" data-copy-target="copy-nodeseek"><strong>复制为NodeSeek格式</strong><span>Tabs · ANSI · 图片</span></button>
         <button type="button" class="action" data-copy-target="copy-markdown"><strong>复制为通用Markdown</strong><span>Markdown 文本</span></button>
         <button type="button" class="action" data-copy-link><strong>复制链接</strong><span>当前 BaseTest 报告</span></button>
       </section>
