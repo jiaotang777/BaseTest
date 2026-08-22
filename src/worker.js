@@ -19,6 +19,10 @@ export default {
         return json({ ok: true, service: "BaseTest" });
       }
 
+      if (request.method === "GET" && url.pathname === "/assets/report.js") {
+        return javascript(REPORT_JS);
+      }
+
       if (request.method === "POST" && url.pathname === "/api/reports") {
         return await createReport(request, env, url.origin);
       }
@@ -184,7 +188,7 @@ function securityHeaders(extra = {}) {
     "x-frame-options": "DENY",
     "referrer-policy": "no-referrer",
     "permissions-policy": "camera=(), microphone=(), geolocation=()",
-    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     ...extra,
   };
 }
@@ -209,6 +213,16 @@ function text(value, status = 200) {
   });
 }
 
+function javascript(value) {
+  return new Response(value, {
+    status: 200,
+    headers: securityHeaders({
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "public, max-age=3600",
+    }),
+  });
+}
+
 function html(markup, status = 200, extra = {}) {
   return new Response(markup, {
     status,
@@ -229,24 +243,26 @@ function esc(value) {
   })[ch]);
 }
 
-const ANSI_COLORS = {
-  30: "#6b7280",
-  31: "#ef4444",
-  32: "#22c55e",
-  33: "#eab308",
-  34: "#60a5fa",
-  35: "#d946ef",
-  36: "#22d3ee",
-  37: "#e5e7eb",
-  90: "#9ca3af",
-  91: "#fb7185",
-  92: "#4ade80",
-  93: "#fde047",
-  94: "#93c5fd",
-  95: "#e879f9",
-  96: "#67e8f9",
-  97: "#ffffff",
-};
+const ANSI_16 = [
+  "#111827", "#ef4444", "#22c55e", "#eab308", "#3b82f6", "#d946ef", "#06b6d4", "#d1d5db",
+  "#6b7280", "#fb7185", "#4ade80", "#fde047", "#93c5fd", "#e879f9", "#67e8f9", "#ffffff",
+];
+
+function xtermColor(n) {
+  const value = Number(n);
+  if (!Number.isInteger(value) || value < 0 || value > 255) return "";
+  if (value < 16) return ANSI_16[value];
+  if (value >= 232) {
+    const c = 8 + (value - 232) * 10;
+    return `rgb(${c},${c},${c})`;
+  }
+  const x = value - 16;
+  const r = Math.floor(x / 36);
+  const g = Math.floor((x % 36) / 6);
+  const b = x % 6;
+  const cv = (v) => (v === 0 ? 0 : 55 + v * 40);
+  return `rgb(${cv(r)},${cv(g)},${cv(b)})`;
+}
 
 function ansiToHtml(value) {
   const input = String(value ?? "");
@@ -254,44 +270,71 @@ function ansiToHtml(value) {
   let out = "";
   let last = 0;
   let match;
-  let color = "";
+  let fg = "";
+  let bg = "";
   let bold = false;
   let dim = false;
+  let underline = false;
+  let inverse = false;
+
+  const reset = () => {
+    fg = "";
+    bg = "";
+    bold = false;
+    dim = false;
+    underline = false;
+    inverse = false;
+  };
 
   const openSpan = () => {
+    let useFg = fg;
+    let useBg = bg;
+    if (inverse) [useFg, useBg] = [useBg || "#0b0d10", useFg || "#e8edf3"];
     const styles = [];
-    if (color) styles.push(`color:${color}`);
+    if (useFg) styles.push(`color:${useFg}`);
+    if (useBg) styles.push(`background-color:${useBg}`);
     if (bold) styles.push("font-weight:700");
     if (dim) styles.push("opacity:.72");
+    if (underline) styles.push("text-decoration:underline");
     return styles.length ? `<span style="${styles.join(";")}">` : "";
   };
 
   let spanOpen = false;
   while ((match = re.exec(input)) !== null) {
-    const segment = input.slice(last, match.index);
-    if (segment) out += esc(segment);
+    if (match.index > last) out += esc(input.slice(last, match.index));
     if (spanOpen) {
       out += "</span>";
       spanOpen = false;
     }
 
     const codes = (match[1] || "0").split(";").map((n) => Number(n || 0));
-    for (const code of codes) {
-      if (code === 0) {
-        color = "";
-        bold = false;
-        dim = false;
-      } else if (code === 1) {
-        bold = true;
-      } else if (code === 2) {
-        dim = true;
-      } else if (code === 22) {
-        bold = false;
-        dim = false;
-      } else if (code === 39) {
-        color = "";
-      } else if (ANSI_COLORS[code]) {
-        color = ANSI_COLORS[code];
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      if (code === 0) reset();
+      else if (code === 1) bold = true;
+      else if (code === 2) dim = true;
+      else if (code === 4) underline = true;
+      else if (code === 7) inverse = true;
+      else if (code === 22) { bold = false; dim = false; }
+      else if (code === 24) underline = false;
+      else if (code === 27) inverse = false;
+      else if (code === 39) fg = "";
+      else if (code === 49) bg = "";
+      else if (code >= 30 && code <= 37) fg = ANSI_16[code - 30];
+      else if (code >= 90 && code <= 97) fg = ANSI_16[8 + code - 90];
+      else if (code >= 40 && code <= 47) bg = ANSI_16[code - 40];
+      else if (code >= 100 && code <= 107) bg = ANSI_16[8 + code - 100];
+      else if ((code === 38 || code === 48) && codes[i + 1] === 5 && Number.isInteger(codes[i + 2])) {
+        const color = xtermColor(codes[i + 2]);
+        if (code === 38) fg = color; else bg = color;
+        i += 2;
+      } else if ((code === 38 || code === 48) && codes[i + 1] === 2 && codes.length > i + 4) {
+        const r = Math.max(0, Math.min(255, codes[i + 2] || 0));
+        const g = Math.max(0, Math.min(255, codes[i + 3] || 0));
+        const b = Math.max(0, Math.min(255, codes[i + 4] || 0));
+        const color = `rgb(${r},${g},${b})`;
+        if (code === 38) fg = color; else bg = color;
+        i += 4;
       }
     }
 
@@ -308,53 +351,262 @@ function ansiToHtml(value) {
   return out;
 }
 
-function sectionStatus(code) {
-  if (code === null) return "unknown";
-  return code === 0 ? "completed" : `exit ${code}`;
+function stripAnsi(value) {
+  return String(value ?? "")
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function splitNodeQuality(log) {
+  const buckets = { basic: [], ip: [], network: [], route: [] };
+  let current = "basic";
+  const lines = String(log || "").split("\n");
+
+  for (const rawLine of lines) {
+    const line = stripAnsi(rawLine).trim();
+    if (/^(正在运行\s*IP\s*质量测试|Running\s+IP\s+Quality\s+Test)/i.test(line)) {
+      current = "ip";
+    } else if (/^(正在运行网络质量测试|Running\s+Network\s+Quality\s+Test)/i.test(line)) {
+      current = "network";
+    } else if (/^(正在运行回程路由追踪|Running\s+Backroute\s+Trace)/i.test(line)) {
+      current = "route";
+    }
+    buckets[current].push(rawLine);
+  }
+
+  for (const key of Object.keys(buckets)) {
+    buckets[key] = buckets[key].join("\n").trim();
+  }
+  return buckets;
+}
+
+function normalizePlain(value) {
+  return stripAnsi(value)
+    .replace(/\r/g, "")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+}
+
+function buildPlainReport(parts) {
+  const blocks = [];
+  if (parts.basic) blocks.push(parts.basic);
+  if (parts.ip) blocks.push(parts.ip);
+  if (parts.network) blocks.push(parts.network);
+  if (parts.route) blocks.push(parts.route);
+  if (parts.tcp) blocks.push(parts.tcp);
+  return normalizePlain(blocks.join("\n\n"));
+}
+
+function buildNodeSeekReport(parts) {
+  const plain = buildPlainReport(parts);
+  return `[code]\n${plain}\n[/code]`;
+}
+
+function buildMarkdownReport(parts) {
+  const blocks = [];
+  const add = (title, value) => {
+    const textValue = normalizePlain(value);
+    if (!textValue) return;
+    blocks.push(`## ${title}\n\n\`\`\`text\n${textValue}\n\`\`\``);
+  };
+  add("基本信息", parts.basic);
+  add("IP质量", parts.ip);
+  add("网络质量", parts.network);
+  add("回程路由", parts.route);
+  add("TCP质量", parts.tcp);
+  return `# BaseTest\n\n${blocks.join("\n\n")}`;
+}
+
+function sectionMarkup(key, title, source, value, index) {
+  const content = String(value || "").trim();
+  if (!content) return "";
+  return `
+    <section class="report-section" data-section="${esc(key)}">
+      <div class="section-head">
+        <span class="section-no">${String(index).padStart(2, "0")}</span>
+        <h2>${esc(title)}</h2>
+        <span class="section-source">${esc(source)}</span>
+      </div>
+      <pre class="report-output">${ansiToHtml(content)}</pre>
+    </section>`;
 }
 
 function reportPage(report) {
   const nq = report.nodeQuality || {};
   const tq = report.tcpQuality || {};
+  const node = splitNodeQuality(nq.log || "");
+  const parts = {
+    basic: node.basic,
+    ip: node.ip,
+    network: node.network,
+    route: node.route,
+    tcp: String(tq.log || "").trim(),
+  };
+  const plain = buildPlainReport(parts);
+  const nodeSeek = buildNodeSeekReport(parts);
+  const markdown = buildMarkdownReport(parts);
+
+  const available = [
+    ["basic", "基本信息", !!parts.basic],
+    ["ip", "IP质量", !!parts.ip],
+    ["network", "网络质量", !!parts.network],
+    ["route", "回程路由", !!parts.route],
+    ["tcp", "TCP质量", !!parts.tcp],
+  ];
+
+  const tabs = available
+    .filter(([, , enabled]) => enabled)
+    .map(([key, label]) => `<button class="tab" type="button" role="tab" data-report-tab="${esc(key)}">${esc(label)}</button>`)
+    .join("");
+
+  let index = 1;
+  const sections = [
+    sectionMarkup("basic", "基本信息", "NodeQuality", parts.basic, index++),
+    sectionMarkup("ip", "IP质量", "NodeQuality", parts.ip, index++),
+    sectionMarkup("network", "网络质量", "NodeQuality", parts.network, index++),
+    sectionMarkup("route", "回程路由", "NodeQuality", parts.route, index++),
+    sectionMarkup("tcp", "TCP质量", "TcpQuality", parts.tcp, index++),
+  ].join("");
+
+  const nodeFailed = nq.exitCode !== null && nq.exitCode !== 0;
+  const tcpFailed = tq.exitCode !== null && tq.exitCode !== 0;
+  const warnings = [
+    nodeFailed ? `NodeQuality exit ${nq.exitCode}` : "",
+    tcpFailed ? `TcpQuality exit ${tq.exitCode}` : "",
+  ].filter(Boolean);
+
   return pageShell(`
-    <main class="report-wrap">
-      <header class="report-header">
-        <div class="brand">BaseTest</div>
-        <h1>VPS Test Report</h1>
-        <div class="meta">${esc(report.createdAt || "")} · ${esc(report.id || "")}</div>
+    <header class="sitebar">
+      <div class="sitebar-inner">
+        <a class="wordmark" href="/">BaseTest</a>
+        <a class="repo-link" href="https://github.com/jiaotang777/BaseTest" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+      </div>
+    </header>
+
+    <main class="viewer">
+      <header class="viewer-head">
+        <div>
+          <div class="kicker">NodeQuality × TcpQuality</div>
+          <h1>BaseTest 报告</h1>
+          <p class="meta">${esc(report.createdAt || "")} · ${esc(report.id || "")}</p>
+        </div>
+        <div class="state ${warnings.length ? "warn" : "ok"}">${warnings.length ? esc(warnings.join(" · ")) : "测试完成"}</div>
       </header>
 
-      <pre class="terminal"><span class="report-label">==================== NodeQuality ====================</span>
-<span class="report-state">status: ${esc(sectionStatus(nq.exitCode))}</span>
+      <section class="actions" aria-label="报告操作">
+        <button type="button" class="action" data-copy-target="copy-plain"><strong>复制文本</strong><span>复制普通文本</span></button>
+        <button type="button" class="action" data-copy-target="copy-nodeseek"><strong>复制为NodeSeek格式</strong><span>论坛代码格式</span></button>
+        <button type="button" class="action" data-copy-target="copy-markdown"><strong>复制为通用Markdown</strong><span>Markdown 文本</span></button>
+        <button type="button" class="action" data-copy-link><strong>复制链接</strong><span>当前 BaseTest 报告</span></button>
+      </section>
 
-${ansiToHtml(nq.log || "No NodeQuality output captured.\n")}
-<span class="report-label">===================== TcpQuality ====================</span>
-<span class="report-state">status: ${esc(sectionStatus(tq.exitCode))}</span>
+      <nav class="tabs" role="tablist" aria-label="报告分类">
+        <button class="tab active" type="button" role="tab" aria-selected="true" data-report-tab="all">全部</button>
+        ${tabs}
+      </nav>
 
-${ansiToHtml(tq.log || "No TcpQuality output captured.\n")}</pre>
+      <div class="report-document">
+        ${sections || '<div class="empty">没有可显示的测试内容。</div>'}
+      </div>
 
-      <footer>BaseTest · NodeQuality + TcpQuality</footer>
+      <textarea id="copy-plain" class="copy-buffer" aria-hidden="true">${esc(plain)}</textarea>
+      <textarea id="copy-nodeseek" class="copy-buffer" aria-hidden="true">${esc(nodeSeek)}</textarea>
+      <textarea id="copy-markdown" class="copy-buffer" aria-hidden="true">${esc(markdown)}</textarea>
+      <div class="toast" role="status" aria-live="polite"></div>
     </main>
+
+    <footer class="footer">BaseTest · 结果直接由 basetest.aniya.site 展示</footer>
+    <script src="/assets/report.js" defer></script>
   `, "BaseTest Report");
 }
 
 function homePage() {
   return pageShell(`
+    <header class="sitebar"><div class="sitebar-inner"><a class="wordmark" href="/">BaseTest</a><a class="repo-link" href="https://github.com/jiaotang777/BaseTest" target="_blank" rel="noopener noreferrer">GitHub ↗</a></div></header>
     <main class="landing">
-      <div class="brand">BaseTest</div>
-      <h1>NodeQuality + TcpQuality</h1>
-      <p>One VPS test command. One BaseTest report URL.</p>
+      <div class="kicker">NodeQuality × TcpQuality</div>
+      <h1>一个命令，一份报告。</h1>
+      <p>一次选择测试项目，完整结果统一显示在 BaseTest。</p>
       <code>bash &lt;(curl -fsSL https://raw.githubusercontent.com/jiaotang777/BaseTest/main/run.sh)</code>
     </main>
   `, "BaseTest");
 }
 
 function notFoundPage() {
-  return pageShell('<main class="landing"><div class="brand">BaseTest</div><h1>Report not found</h1><p>This report may have expired or the URL is invalid.</p></main>', "Report not found");
+  return pageShell('<main class="landing"><div class="kicker">404</div><h1>Report not found</h1><p>报告不存在、已经过期，或地址无效。</p></main>', "Report not found");
 }
 
 function pageShell(body, title) {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>
-  :root{color-scheme:dark;--bg:#0b0d10;--panel:#111419;--line:#2b3038;--text:#e8edf3;--muted:#8b949e;--green:#3ddc84;--yellow:#f7c948;--blue:#58a6ff}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.report-wrap{width:min(1180px,calc(100% - 28px));margin:0 auto;padding:44px 0 36px}.report-header{padding:12px 4px 30px;border-bottom:1px solid var(--line);margin-bottom:24px}.brand{font:800 13px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--green)}.report-header h1,.landing h1{font-size:clamp(30px,6vw,58px);letter-spacing:-.04em;margin:12px 0 8px}.meta{color:var(--muted);font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.terminal{margin:0;background:#17191d;border:1px solid var(--line);border-radius:12px;padding:20px;overflow:auto;white-space:pre;tab-size:4;color:#d7dde5;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace;box-shadow:0 12px 30px rgba(0,0,0,.18)}.report-label{color:var(--blue);font-weight:800}.report-state{color:var(--muted)}footer{border-top:1px solid var(--line);padding-top:22px;color:var(--muted);text-align:center;font-size:12px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:17px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--panel);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:680px){.report-wrap{width:calc(100% - 16px);padding-top:24px}.report-header{padding-left:6px;padding-right:6px}.terminal{padding:12px;border-radius:9px;font-size:11px}.landing{padding-top:10vh}}
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>${esc(title)}</title><style>
+  :root{color-scheme:dark;--bg:#0d0f12;--surface:#14171c;--surface2:#191d23;--line:#2a3038;--line2:#363d47;--text:#e7ebf0;--muted:#8c96a3;--soft:#b7c0cb;--green:#42d392;--green-bg:#14261f;--yellow:#f0c66b;--yellow-bg:#292217;--blue:#73a7ff;--shadow:0 18px 50px rgba(0,0,0,.24)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.sitebar{border-bottom:1px solid var(--line);background:rgba(13,15,18,.92);position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}.sitebar-inner{height:56px;width:min(1080px,calc(100% - 28px));margin:0 auto;display:flex;align-items:center;justify-content:space-between}.wordmark{color:var(--text);font-weight:850;letter-spacing:-.02em;text-decoration:none;font-size:17px}.wordmark:before{content:"●";color:var(--green);font-size:10px;margin-right:9px;vertical-align:2px}.repo-link{color:var(--muted);text-decoration:none;font-size:13px}.repo-link:hover{color:var(--text)}.viewer{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:34px 0 26px}.viewer-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.kicker{font:750 11px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);letter-spacing:.13em;text-transform:uppercase}.viewer-head h1,.landing h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.045em;line-height:1.05;margin:9px 0 8px}.meta{margin:0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.state{flex:none;border:1px solid #23543f;background:var(--green-bg);color:var(--green);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:750}.state.warn{border-color:#5b4924;background:var(--yellow-bg);color:var(--yellow)}.actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);margin-bottom:18px}.action{appearance:none;text-align:left;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text);padding:13px 15px;cursor:pointer;min-height:64px}.action:last-child{border-right:0}.action:hover{background:var(--surface2)}.action strong,.action span{display:block}.action strong{font-size:13px}.action span{font-size:11px;color:var(--muted);margin-top:3px}.tabs{display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:0 0 10px}.tabs::-webkit-scrollbar{display:none}.tab{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;white-space:nowrap;font-weight:700;font-size:12px;cursor:pointer}.tab:hover{border-color:var(--line2);color:var(--text)}.tab.active{background:var(--text);border-color:var(--text);color:#0d0f12}.report-document{border:1px solid var(--line);border-radius:12px;background:#101216;box-shadow:var(--shadow);overflow:hidden}.report-section{padding:0 18px}.report-section+.report-section{border-top:1px solid var(--line)}.section-head{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(42,48,56,.55)}.section-no{font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#596370}.section-head h2{font-size:14px;margin:0;letter-spacing:.01em}.section-source{margin-left:auto;color:var(--muted);font:10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.report-output{margin:0;padding:17px 0 23px;overflow-x:auto;white-space:pre;tab-size:4;color:#d8dee8;font:12px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace}.report-section[hidden]{display:none}.empty{padding:40px;text-align:center;color:var(--muted)}.copy-buffer{position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none}.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,18px);background:#eef2f6;color:#111827;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:750;opacity:0;pointer-events:none;transition:.18s ease;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.footer{width:min(1080px,calc(100% - 28px));margin:0 auto;border-top:1px solid var(--line);padding:20px 0 32px;color:#65707d;text-align:center;font-size:11px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:16px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--surface);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.viewer{width:calc(100% - 16px);padding-top:23px}.sitebar-inner,.footer{width:calc(100% - 20px)}.viewer-head{align-items:flex-start;flex-direction:column;gap:12px}.actions{grid-template-columns:repeat(2,minmax(0,1fr))}.action:nth-child(2){border-right:0}.action:nth-child(-n+2){border-bottom:1px solid var(--line)}.report-section{padding:0 10px}.section-head{height:47px}.report-output{font-size:10.5px;line-height:1.45;padding-top:14px;padding-bottom:18px}.tabs{margin-left:-2px}.landing{padding-top:10vh}}@media(max-width:430px){.actions{box-shadow:none}.action{padding:11px 12px;min-height:58px}.action strong{font-size:12px}.action span{font-size:10px}.viewer-head h1{font-size:34px}}
   </style></head><body>${body}</body></html>`;
 }
+
+const REPORT_JS = `(() => {
+  const tabs = Array.from(document.querySelectorAll('[data-report-tab]'));
+  const sections = Array.from(document.querySelectorAll('[data-section]'));
+  const toast = document.querySelector('.toast');
+  let toastTimer = 0;
+
+  function notify(message) {
+    if (!toast) return;
+    toast.textContent = message;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 1500);
+  }
+
+  function selectTab(key) {
+    tabs.forEach((tab) => {
+      const active = tab.dataset.reportTab === key;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    sections.forEach((section) => {
+      section.hidden = key !== 'all' && section.dataset.section !== key;
+    });
+  }
+
+  tabs.forEach((tab) => tab.addEventListener('click', () => selectTab(tab.dataset.reportTab)));
+
+  async function copyText(value) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    const temp = document.createElement('textarea');
+    temp.value = value;
+    temp.style.position = 'fixed';
+    temp.style.opacity = '0';
+    document.body.appendChild(temp);
+    temp.select();
+    document.execCommand('copy');
+    temp.remove();
+  }
+
+  document.querySelectorAll('[data-copy-target]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = document.getElementById(button.dataset.copyTarget);
+      if (!target) return;
+      try {
+        await copyText(target.value);
+        notify('已复制');
+      } catch {
+        notify('复制失败');
+      }
+    });
+  });
+
+  const linkButton = document.querySelector('[data-copy-link]');
+  if (linkButton) {
+    linkButton.addEventListener('click', async () => {
+      try {
+        await copyText(location.href);
+        notify('报告链接已复制');
+      } catch {
+        notify('复制失败');
+      }
+    });
+  }
+})();`;

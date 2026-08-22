@@ -25,7 +25,7 @@ https://basetest.aniya.site/r/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ## 报告
 
-BaseTest 报告将 NodeQuality 与 TcpQuality 的完整测试输出连续排版在同一个页面，保留终端颜色与表格布局，不嵌套上游网页，也不要求跳转到其它报告站。
+BaseTest 报告采用报告查看器形式：支持「全部 / 基本信息 / IP质量 / 网络质量 / 回程路由 / TCP质量」分类切换，并提供复制文本、NodeSeek 格式和通用 Markdown。NodeQuality 与 TcpQuality 的结果都直接显示在同一个 BaseTest 页面中，不嵌套上游网页，也不要求跳转到其它报告站。
 
 示例格式：
 
