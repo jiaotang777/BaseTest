@@ -543,7 +543,17 @@ function splitNodeQuality(log) {
     }
 
     if (
-      /^(?:正在运行|Running\s+)/i.test(line) ||
+      /^(?:正在运行|Running\s+)/i.test(line)
+    ) {
+      if (current) {
+        reports.push(current);
+        current = null;
+      }
+
+      continue;
+    }
+
+    if (
       /^(?:报告链接|Report Link)\s*[:：]/i.test(line) ||
       /nodequality\.com\/r\//i.test(line) ||
       /Report\.Check\.Place\//i.test(line)
@@ -626,11 +636,13 @@ function splitNodeQuality(log) {
     ) || "";
 
   const route =
-    netReports.find((report) =>
-      report !== network &&
-      /(?:五、三网回程路由|5\.\s*Route to China Mainland)/i
-        .test(stripAnsi(report))
-    ) || "";
+    netReports
+      .filter((report) =>
+        report !== network &&
+        /(?:五、三网回程路由|5\.\s*Route to China Mainland)/i
+          .test(stripAnsi(report))
+      )
+      .join("\n\n");
 
   return {
     basic,

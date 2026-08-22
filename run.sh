@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.4.11"
+VERSION="0.4.12"
 REPORT_BASE_URL="${NQC_REPORT_BASE_URL:-https://basetest.aniya.site}"
 UPLOAD_TOKEN="${NQC_UPLOAD_TOKEN:-}"
 NODEQUALITY_RUN_URL="${NODEQUALITY_RUN_URL:-https://run.NodeQuality.com}"
@@ -186,6 +186,79 @@ run_nodequality() {
   echo " NodeQuality"
   echo "============================================================"
   fetch_script "$NODEQUALITY_RUN_URL" "$NODE_SCRIPT" "NodeQuality" || return $?
+
+  # NodeQuality 上游通过 Check.Place 动态获取子测试脚本。
+  # 只修改本次下载到临时目录的副本，增加失败检测和自动重试。
+  sed -i \
+    -e 's#curl -Ls https://Net.Check.Place#curl -fLs --retry 5 --retry-all-errors --retry-delay 2 https://Net.Check.Place#g' \
+    -e 's#curl -Ls https://IP.Check.Place#curl -fLs --retry 5 --retry-all-errors --retry-delay 2 https://IP.Check.Place#g' \
+    "$NODE_SCRIPT"
+
+  # NetQuality 如果第一次没有产生正式报告，
+  # 自动重新执行整个 NetQuality 模块一次。
+  python3 - "$NODE_SCRIPT" <<'PYNQ'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text(encoding="utf-8")
+
+start = s.find("function run_net_quality(){")
+end = s.find("function run_net_trace(){", start)
+
+if start < 0 or end < 0:
+    raise SystemExit("找不到 upstream run_net_quality")
+
+new = r'''function run_net_quality(){
+    local params=""
+    local output=""
+    local rc=1
+    local attempt=1
+
+    [[ "$run_net_quality_test" =~ ^[Ll]$ ]] && params=" -L"
+
+    while [[ "$attempt" -le 2 ]]; do
+        output="$(
+            chroot_run bash \
+              <(curl -fLs \
+                --retry 5 \
+                --retry-all-errors \
+                --retry-delay 2 \
+                https://Net.Check.Place) \
+              $opt_ipv \
+              $opt_lang \
+              $params \
+              -y \
+              -o /result/$net_quality_json_filename \
+              2>&1
+        )"
+
+        rc=$?
+
+        if printf '%s\n' "$output" \
+          | grep -Eq '网络质量体检报告|NET(WORK)?[[:space:]]+QUALITY.*REPORT'
+        then
+            printf '%s\n' "$output"
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+
+        if [[ "$attempt" -le 2 ]]; then
+            sleep 2
+        fi
+    done
+
+    printf '%s\n' "$output"
+    return "$rc"
+}'''
+
+p.write_text(
+    s[:start] + new + "\n\n" + s[end:],
+    encoding="utf-8"
+)
+PYNQ
+
   set +e
   printf '%s\n%s\n%s\n%s\n' "$NQ_HQ" "$NQ_IP" "$NQ_NET" "$NQ_TRACE" \
     | bash "$NODE_SCRIPT" "${NODE_ARGS[@]}" 2>&1 \
