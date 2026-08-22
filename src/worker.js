@@ -493,7 +493,136 @@ function trimAnsiLine(value) {
     );
 }
 
-function nodeQualityMarkup(value, extraClass = "") {
+
+function isRouteNodeQualityContent(value) {
+  const plain = stripAnsi(String(value || ""));
+  return /回程路由|教育网回程|国际互联网|单线程测速/.test(plain);
+}
+
+function splitRouteNodeQualityReports(value) {
+  const lines = String(value || "").replace(/\r/g, "").split("\n");
+  const blocks = [];
+  let current = [];
+
+  const hasContent = (arr) =>
+    arr.some((line) => stripAnsi(line).trim() !== "");
+
+  for (const rawLine of lines) {
+    const plain = stripAnsi(rawLine).trim();
+
+    if (
+      /^(?:IP|网络|硬件)质量(?:体检)?报告[:：]/.test(plain) &&
+      hasContent(current)
+    ) {
+      blocks.push(current.join("\n").trim());
+      current = [rawLine];
+      continue;
+    }
+
+    current.push(rawLine);
+  }
+
+  if (hasContent(current)) {
+    blocks.push(current.join("\n").trim());
+  }
+
+  return blocks.filter(Boolean);
+}
+
+function detectRouteReportFamily(value) {
+  const plain = stripAnsi(String(value || ""));
+
+  if (/(^|\n)\s*IPv6\b/i.test(plain)) return "IPv6";
+  if (/(^|\n)\s*IPv4\b/i.test(plain)) return "IPv4";
+
+  const v6Like = /(?:^|[^0-9])(?:[0-9a-f]{1,4}:){2,}[0-9a-f:*]{1,}/i.test(plain);
+  const v4Like = /\b(?:\d{1,3}\.){2,3}(?:\d{1,3}|\*+)\b/.test(plain);
+
+  if (v6Like && !v4Like) return "IPv6";
+  return "IPv4";
+}
+
+function trimRouteNodeQualityHeader(value) {
+  const lines = String(value || "").replace(/\r/g, "").split("\n");
+  const kept = [];
+  let started = false;
+
+  for (const rawLine of lines) {
+    const plain = stripAnsi(rawLine).trim();
+
+    if (!started) {
+      if (
+        /^(?:[一二三四五六七八九十]+、)?(?:三网)?回程路由/.test(plain) ||
+        /^(?:IPv4|IPv6)\s*回程路由/i.test(plain) ||
+        /^教育网回程/.test(plain) ||
+        /^国际互联网/.test(plain) ||
+        /^单线程测速/.test(plain)
+      ) {
+        started = true;
+        kept.push(rawLine);
+      }
+      continue;
+    }
+
+    if (/^(?:IP|网络|硬件)质量(?:体检)?报告[:：]/.test(plain)) continue;
+    if (/^https?:\/\/github\.com\//i.test(plain)) continue;
+    if (/^bash\s+<\(curl\b/i.test(plain)) continue;
+    if (/^报告时间[:：]/.test(plain)) continue;
+    if (/^脚本版本[:：]/.test(plain)) continue;
+
+    kept.push(rawLine);
+  }
+
+  return kept.join("\n").trim();
+}
+
+function routeBodyToHtml(value) {
+  const body = String(value || "").replace(/\r/g, "");
+  const html = body
+    .split("\n")
+    .map((line) => (line ? ansiToHtml(line) : "&nbsp;"))
+    .join("\n");
+
+  return `<div style="white-space:pre;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,monospace;line-height:1.68;font-size:15px;">${html}</div>`;
+}
+
+function routeNodeQualityMarkup(value, extraClass = "") {
+  const rawBlocks = splitRouteNodeQualityReports(value);
+
+  if (!rawBlocks.length) {
+    return baseNodeQualityMarkup(value, extraClass);
+  }
+
+  const cards = rawBlocks
+    .map((block) => {
+      const family = detectRouteReportFamily(block);
+      const title = `${family} 回程路由`;
+      const pillStyle =
+        family === "IPv6"
+          ? "display:inline-flex;align-items:center;justify-content:center;min-width:90px;height:46px;padding:0 18px;border-radius:999px;background:rgba(25,185,255,.12);border:1px solid rgba(25,185,255,.28);color:#56d6ff;font-weight:800;font-size:15px;"
+          : "display:inline-flex;align-items:center;justify-content:center;min-width:90px;height:46px;padding:0 18px;border-radius:999px;background:rgba(53,214,123,.12);border:1px solid rgba(53,214,123,.28);color:#54ea8f;font-weight:800;font-size:15px;";
+
+      const cleaned = trimRouteNodeQualityHeader(block) || block;
+
+      return `
+        <div style="border:1px solid rgba(120,140,190,.18);border-radius:22px;overflow:hidden;background:rgba(6,10,18,.55);margin:0 0 18px 0;">
+          <div style="display:flex;align-items:center;gap:16px;padding:18px 22px;border-bottom:1px solid rgba(255,255,255,.08);">
+            <span style="${pillStyle}">${family}</span>
+            <div style="font-size:18px;font-weight:800;color:#f2f6ff;letter-spacing:.01em;">${title}</div>
+          </div>
+          <div style="padding:20px 22px 22px 22px;">
+            ${routeBodyToHtml(cleaned)}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `<div class="${extraClass}" style="display:block;">${cards}</div>`;
+}
+
+
+function baseNodeQualityMarkup(value, extraClass = "") {
   const lines = String(value || "")
     .replace(/\r/g, "")
     .split("\n");
@@ -562,6 +691,15 @@ function nodeQualityMarkup(value, extraClass = "") {
   );
 }
 
+
+
+function nodeQualityMarkup(value, extraClass = "") {
+  if (isRouteNodeQualityContent(value)) {
+    return routeNodeQualityMarkup(value, extraClass);
+  }
+
+  return baseNodeQualityMarkup(value, extraClass);
+}
 
 
 function stripAnsi(value) {
