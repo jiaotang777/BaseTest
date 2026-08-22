@@ -755,6 +755,75 @@ function trimNetworkNodeQualityHeader(value) {
     .trim();
 }
 
+function ensureIpv6NetworkSectionSix(
+  family,
+  value
+) {
+  const text =
+    String(value || "");
+
+  if (family !== "IPv6") {
+    return text;
+  }
+
+  const plain =
+    stripAnsi(text);
+
+  // 如果 NodeQuality 已经真正输出第六节，
+  // 完全保留上游真实结果。
+  const hasSectionSix =
+    /(?:^|\n)\s*(?:六、国内测速|6\.\s*CN NetSpeed)/im
+      .test(plain);
+
+  const hasSectionSeven =
+    /(?:^|\n)\s*(?:七、国际互连|7\.\s*Global Network)/im
+      .test(plain);
+
+  if (
+    hasSectionSix ||
+    !hasSectionSeven
+  ) {
+    return text;
+  }
+
+  const lines =
+    text
+      .replace(/\r/g, "")
+      .split("\n");
+
+  const index =
+    lines.findIndex((rawLine) => {
+      const line =
+        stripAnsi(rawLine).trim();
+
+      return (
+        /^七、国际互连/i.test(line) ||
+        /^7\.\s*Global Network/i.test(line)
+      );
+    });
+
+  if (index < 0) {
+    return text;
+  }
+
+  const seventh =
+    stripAnsi(lines[index]).trim();
+
+  const sectionSix =
+    /^7\.\s*Global Network/i.test(seventh)
+      ? "6. CN NetSpeed - IPv4 only"
+      : "六、国内测速仅 IPv4";
+
+  lines.splice(
+    index,
+    0,
+    sectionSix,
+    ""
+  );
+
+  return lines.join("\n");
+}
+
 function networkGroups(value) {
   const rawBlocks =
     splitRouteNodeQualityReports(value);
@@ -795,14 +864,22 @@ function networkGroups(value) {
     .filter((family) =>
       grouped.has(family)
     )
-    .map((family) => ({
-      family,
-
-      content:
+    .map((family) => {
+      const content =
         grouped
           .get(family)
-          .join("\n\n"),
-    }));
+          .join("\n\n");
+
+      return {
+        family,
+
+        content:
+          ensureIpv6NetworkSectionSix(
+            family,
+            content
+          ),
+      };
+    });
 }
 
 function networkPlainText(value) {
