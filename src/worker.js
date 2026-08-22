@@ -748,9 +748,15 @@ function splitNodeQuality(log) {
       !stripAnsi(output[output.length - 1]).trim()
     ) {
       output.pop();
-    }
+    }    const joined = output
+      .join("\n")
+      .replace(
+        /(?:^|\n)(?:\s*adding:\s+.*\n|\s*zip warning:.*\n|\s*% Total\s+% Received\s+% Xferd.*\n|\s*Dload\s+Upload\s+Total\s+Spent.*\n|\s*(?:0|100)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+.*\n)+(?=(?:\n\s*报告时间[:：]|\n\s*今日报告次数[:：]|\n\s*累计报告次数[:：]|$))/g,
+        "\n"
+      )
+      .replace(/\n{3,}/g, "\n\n");
 
-    return output.join("\n").trim();
+    return joined.trim();
   };
 
   const netReports = reports
