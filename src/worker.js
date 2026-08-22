@@ -628,48 +628,40 @@ function routeBodyToHtml(value) {
     .join("\n");
 }
 
-function routeNodeQualityMarkup(value, extraClass = "") {
+function routeGroups(value) {
   const rawBlocks =
     splitRouteNodeQualityReports(value);
 
   if (!rawBlocks.length) {
-    return baseNodeQualityMarkup(
-      value,
-      extraClass
-    );
+    return [];
   }
 
-  const normalized =
-    rawBlocks.map((block, index) => ({
-      family:
-        detectRouteReportFamily(
-          block,
-          index,
-          rawBlocks.length
-        ),
-
-      content:
-        trimRouteNodeQualityHeader(block) ||
-        block,
-    }));
-
-  // 不再把重复协议族强行翻成另一种。
-  // 同协议族如果出现多段，就合并到同一张卡。
   const grouped = new Map();
 
-  for (const item of normalized) {
-    if (!grouped.has(item.family)) {
-      grouped.set(item.family, []);
+  rawBlocks.forEach((block, index) => {
+    const family =
+      detectRouteReportFamily(
+        block,
+        index,
+        rawBlocks.length
+      );
+
+    const content =
+      trimRouteNodeQualityHeader(block) ||
+      block;
+
+    if (!grouped.has(family)) {
+      grouped.set(family, []);
     }
 
-    if (item.content) {
+    if (content) {
       grouped
-        .get(item.family)
-        .push(item.content);
+        .get(family)
+        .push(content);
     }
-  }
+  });
 
-  const items = [
+  return [
     "IPv4",
     "IPv6",
   ]
@@ -684,6 +676,35 @@ function routeNodeQualityMarkup(value, extraClass = "") {
           .get(family)
           .join("\n\n"),
     }));
+}
+
+function routePlainText(value) {
+  const groups =
+    routeGroups(value);
+
+  if (!groups.length) {
+    return normalizePlain(value);
+  }
+
+  return groups
+    .map((item) =>
+      `【${item.family} 三网回程路由】\n${normalizePlain(
+        item.content
+      )}`
+    )
+    .join("\n\n");
+}
+
+function routeNodeQualityMarkup(value, extraClass = "") {
+  const items =
+    routeGroups(value);
+
+  if (!items.length) {
+    return baseNodeQualityMarkup(
+      value,
+      extraClass
+    );
+  }
 
   const cards = items
     .map((item) => {
@@ -1485,9 +1506,19 @@ function reportPage(report) {
     tcpInternational: tcp.international,
     tcpSpeedtest: tcp.speedtest,
   };
-  const plain = buildPlainReport(parts);
-  const nodeSeek = buildNodeSeekReport(parts);
-  const markdown = buildMarkdownReport(parts);
+  const copyParts = {
+    ...parts,
+    route: routePlainText(node.route),
+  };
+
+  const plain =
+    buildPlainReport(copyParts);
+
+  const nodeSeek =
+    buildNodeSeekReport(copyParts);
+
+  const markdown =
+    buildMarkdownReport(copyParts);
 
   const hasAnyContent = Object.values(parts).some(
     (value) => String(value || "").trim()
