@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 REPORT_BASE_URL="${NQC_REPORT_BASE_URL:-https://basetest.aniya.site}"
 UPLOAD_TOKEN="${NQC_UPLOAD_TOKEN:-}"
 NODEQUALITY_RUN_URL="${NODEQUALITY_RUN_URL:-https://run.NodeQuality.com}"
 TCPQUALITY_RUN_URL="${TCPQUALITY_RUN_URL:-https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh}"
-MAX_LOG_BYTES="${NQC_MAX_LOG_BYTES:-524288}"
+MAX_LOG_BYTES="${NQC_MAX_LOG_BYTES:-700000}"
 
 NODE_ARGS=()
 TCP_ARGS=()
 SKIP_NODE=0
 SKIP_TCP=0
+INTERACTIVE_MENU=1
 
 usage() {
   cat <<'USAGE'
-BaseTest — NodeQuality + TcpQuality unified runner
+BaseTest - NodeQuality + TcpQuality unified runner
 
 Usage:
   bash run.sh [options]
@@ -27,12 +28,13 @@ Options:
   --tcp-arg ARG           Pass one argument to TcpQuality (repeatable)
   --skip-node             Skip NodeQuality
   --skip-tcp              Skip TcpQuality
+  --no-menu               Do not ask the unified menu; use all default choices
   -h, --help              Show this help
   -v, --version           Show version
 
 Examples:
   bash run.sh
-  bash run.sh --tcp-arg --all
+  bash run.sh --no-menu
 USAGE
 }
 
@@ -52,6 +54,7 @@ while (($#)); do
       TCP_ARGS+=("$2"); shift 2 ;;
     --skip-node) SKIP_NODE=1; shift ;;
     --skip-tcp) SKIP_TCP=1; shift ;;
+    --no-menu) INTERACTIVE_MENU=0; shift ;;
     -h|--help) usage; exit 0 ;;
     -v|--version) echo "$VERSION"; exit 0 ;;
     *) echo "[x] Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -69,7 +72,7 @@ if [[ "$SKIP_NODE" -eq 1 && "$SKIP_TCP" -eq 1 ]]; then
   exit 2
 fi
 
-for cmd in bash curl grep tail mktemp tee python3; do
+for cmd in bash curl grep mktemp tee python3 sed; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "[x] Missing dependency: $cmd" >&2; exit 1; }
 done
 
@@ -84,12 +87,97 @@ TCP_SCRIPT="$WORK_DIR/tcpquality.sh"
 : > "$NODE_LOG"
 : > "$TCP_LOG"
 
+# Defaults match the upstream interactive defaults.
+NQ_HQ="y"
+NQ_IP="y"
+NQ_NET="y"
+NQ_TRACE="y"
+TQ_ROUTE="y"
+TQ_EDU="y"
+TQ_INTL="y"
+TQ_SPEED="y"
+TQ_RANK="y"
+
+read_choice() {
+  local prompt="$1" allowed="$2" default_value="$3" answer=""
+  while :; do
+    if [[ -r /dev/tty ]]; then
+      printf '%s' "$prompt" > /dev/tty
+      IFS= read -r answer < /dev/tty || answer=""
+    else
+      printf '%s' "$prompt" >&2
+      IFS= read -r answer || answer=""
+    fi
+    answer="${answer:-$default_value}"
+    answer="${answer,,}"
+    case ":$allowed:" in
+      *":$answer:"*) printf '%s' "$answer"; return 0 ;;
+    esac
+    printf '输入无效，可选值：%s\n' "${allowed//:/, }" >&2
+  done
+}
+
+show_unified_menu() {
+  echo
+  echo "============================================================"
+  echo " BaseTest 测试选项"
+  echo "============================================================"
+  echo "请先一次性选择全部测试项目，确认后才开始运行。"
+  echo
+
+  if [[ "$SKIP_NODE" -eq 0 ]]; then
+    echo "[NodeQuality]"
+    NQ_HQ=$(read_choice "1. HardwareQuality？[y/f/v/n]（默认 y）：" "y:f:v:n" "y")
+    NQ_IP=$(read_choice "2. IPQuality？[y/n]（默认 y）：" "y:n" "y")
+    NQ_NET=$(read_choice "3. NetQuality？[y/l/n]（默认 y）：" "y:l:n" "y")
+    NQ_TRACE=$(read_choice "4. 回程路由追踪？[y/n]（默认 y）：" "y:n" "y")
+    echo
+  fi
+
+  if [[ "$SKIP_TCP" -eq 0 ]]; then
+    echo "[TcpQuality]"
+    TQ_ROUTE=$(read_choice "5. 三网回程（IPv4/IPv6/IPv4大包）？[y/n]（默认 y）：" "y:n" "y")
+    TQ_EDU=$(read_choice "6. 教育网回程（CERNET/CERNET2）？[y/n]（默认 y）：" "y:n" "y")
+    TQ_INTL=$(read_choice "7. 国际互联？[y/n]（默认 y）：" "y:n" "y")
+    TQ_SPEED=$(read_choice "8. 三网单线程速度？[y/n]（默认 y）：" "y:n" "y")
+    TQ_RANK=$(read_choice "9. 上传 TcpQuality 原站报告并参与排名？[y/n]（默认 y）：" "y:n" "y")
+
+    if [[ "$TQ_ROUTE" == n && "$TQ_EDU" == n && "$TQ_INTL" == n && "$TQ_SPEED" == n ]]; then
+      echo "[x] TcpQuality 至少需要选择一个测试项目。" >&2
+      exit 2
+    fi
+    if [[ "$TQ_ROUTE" == n && "$TQ_EDU" == n && "$TQ_INTL" == y && "$TQ_SPEED" == y ]]; then
+      echo "[x] TcpQuality 国际互联与单线程测速不能在关闭三网/教育网时同时单独运行。" >&2
+      exit 2
+    fi
+  fi
+
+  echo
+  echo "选项已确定，开始测试。"
+}
+
+if [[ "$INTERACTIVE_MENU" -eq 1 ]]; then
+  show_unified_menu
+fi
+
 fetch_script() {
   local url="$1" output="$2" label="$3"
   echo "[BaseTest] Fetching ${label}..."
-  curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 60 \
+  curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 90 \
     "$url" -o "$output"
   [[ -s "$output" ]] || { echo "[x] ${label} download was empty" >&2; return 1; }
+}
+
+filter_live_output() {
+  # Upstream report links are captured internally when needed, but the terminal
+  # only exposes the final BaseTest report URL.
+  sed -E \
+    -e '/nodequality\.com\/r\/[A-Za-z0-9_-]+/d' \
+    -e '/tcpquality\.ibsgss\.uk\/r\/[A-Za-z0-9_-]+/d' \
+    -e '/运行 HardwareQuality 测试？/d' \
+    -e '/运行 IPQuality 测试？/d' \
+    -e '/运行 NetQuality 测试？/d' \
+    -e '/运行 回程路由追踪（Backroute Trace）测试？/d'
 }
 
 run_nodequality() {
@@ -99,10 +187,43 @@ run_nodequality() {
   echo "============================================================"
   fetch_script "$NODEQUALITY_RUN_URL" "$NODE_SCRIPT" "NodeQuality" || return $?
   set +e
-  bash "$NODE_SCRIPT" "${NODE_ARGS[@]}" 2>&1 | tee "$NODE_LOG"
-  local rc=${PIPESTATUS[0]}
+  printf '%s\n%s\n%s\n%s\n' "$NQ_HQ" "$NQ_IP" "$NQ_NET" "$NQ_TRACE" \
+    | bash "$NODE_SCRIPT" "${NODE_ARGS[@]}" 2>&1 \
+    | tee "$NODE_LOG" \
+    | filter_live_output
+  local rc=${PIPESTATUS[1]}
   set -e
   return "$rc"
+}
+
+build_tcp_args() {
+  local -a selected=()
+
+  [[ "$TQ_EDU" == y ]] && selected+=("--cernet")
+  [[ "$TQ_INTL" == y ]] && selected+=("--intl")
+
+  if [[ "$TQ_SPEED" == y ]]; then
+    if [[ "$TQ_ROUTE" == n && "$TQ_EDU" == n ]]; then
+      selected+=("--only-speedtest")
+    else
+      selected+=("--speedtest")
+    fi
+  fi
+
+  if [[ "$TQ_ROUTE" == y && "$TQ_EDU" == y && "$TQ_INTL" == y && "$TQ_SPEED" == y ]]; then
+    selected=("--all")
+  fi
+
+  [[ "$TQ_RANK" == n ]] && selected+=("--no-rank-upload")
+
+  # The upstream rootfs enters its own menu when no core argument exists.
+  # -s 0 equals the current standard SYN default and is used only as a neutral
+  # explicit argument to keep the already-selected BaseTest choices noninteractive.
+  if [[ ${#selected[@]} -eq 0 ]]; then
+    selected=("-s" "0")
+  fi
+
+  TCP_SELECTED_ARGS=("${selected[@]}")
 }
 
 run_tcpquality() {
@@ -111,8 +232,12 @@ run_tcpquality() {
   echo " TcpQuality"
   echo "============================================================"
   fetch_script "$TCPQUALITY_RUN_URL" "$TCP_SCRIPT" "TcpQuality" || return $?
+  build_tcp_args
   set +e
-  bash "$TCP_SCRIPT" "${TCP_ARGS[@]}" 2>&1 | tee "$TCP_LOG"
+  INTERACTIVE_INCLUDE_DEFAULT_ROUTE="$([[ "$TQ_ROUTE" == y ]] && echo 1 || echo 0)" \
+    bash "$TCP_SCRIPT" "${TCP_SELECTED_ARGS[@]}" "${TCP_ARGS[@]}" 2>&1 \
+    | tee "$TCP_LOG" \
+    | filter_live_output
   local rc=${PIPESTATUS[0]}
   set -e
   return "$rc"
@@ -124,41 +249,75 @@ if [[ "$SKIP_NODE" -eq 0 ]]; then run_nodequality || node_rc=$?; fi
 if [[ "$SKIP_TCP" -eq 0 ]]; then run_tcpquality || tcp_rc=$?; fi
 
 PAYLOAD_FILE="$WORK_DIR/payload.json"
-META_FILE="$WORK_DIR/meta.json"
-python3 - "$NODE_LOG" "$TCP_LOG" "$PAYLOAD_FILE" "$META_FILE" "$node_rc" "$tcp_rc" "$VERSION" "$MAX_LOG_BYTES" <<'PYJSON'
+python3 - "$NODE_LOG" "$TCP_LOG" "$PAYLOAD_FILE" "$node_rc" "$tcp_rc" "$VERSION" "$MAX_LOG_BYTES" <<'PYJSON'
 import json
 import pathlib
 import re
 import sys
 
-node_log, tcp_log, out, meta_out, node_rc, tcp_rc, version, max_bytes = sys.argv[1:]
+node_log, tcp_log, out, node_rc, tcp_rc, version, max_bytes = sys.argv[1:]
 max_bytes = int(max_bytes)
-ansi = re.compile(rb"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+# Keep SGR color codes (ESC[...m) for the BaseTest HTML renderer, but remove
+# cursor movement/OSC/control noise that does not make sense in a static page.
+osc = re.compile(rb"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+csi_non_sgr = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-LN-Z\\-_]")
+upstream_url = re.compile(
+    r"https?://(?:(?:[A-Za-z0-9.-]+\.)?nodequality\.com|tcpquality\.ibsgss\.uk)/r/[A-Za-z0-9_-]+",
+    re.I,
+)
+node_url_re = re.compile(r"https?://(?:[A-Za-z0-9.-]+\.)?nodequality\.com/r/[A-Za-z0-9_-]+", re.I)
+tcp_url_re = re.compile(r"https?://tcpquality\.ibsgss\.uk/r/[A-Za-z0-9_-]+", re.I)
 
 
-def clean_bytes(path):
+def clean_log(path, kind):
     data = pathlib.Path(path).read_bytes()
-    data = ansi.sub(b"", data).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    data = osc.sub(b"", data)
+    data = csi_non_sgr.sub(b"", data)
+    data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     if len(data) > max_bytes:
         prefix = f"[log truncated: showing last {max_bytes} bytes of {len(data)}]\n".encode()
         data = prefix + data[-max_bytes:]
-    return data.decode("utf-8", errors="replace")
+    text = data.decode("utf-8", errors="replace")
+
+    # Remove upstream report URLs and duplicated upstream interactive prompts.
+    cleaned = []
+    for line in text.splitlines():
+        if upstream_url.search(line):
+            continue
+        if kind == "node" and any(marker in line for marker in (
+            "运行 HardwareQuality 测试？",
+            "运行 IPQuality 测试？",
+            "运行 NetQuality 测试？",
+            "运行 回程路由追踪（Backroute Trace）测试？",
+        )):
+            continue
+        cleaned.append(line.rstrip())
+    return "\n".join(cleaned).strip() + "\n"
 
 
-node_text = clean_bytes(node_log)
-tcp_text = clean_bytes(tcp_log)
-node_match = re.findall(r"https?://(?:[A-Za-z0-9.-]+\.)?nodequality\.com/r/[A-Za-z0-9_-]+", node_text, re.I)
-tcp_match = re.findall(r"https?://tcpquality\.ibsgss\.uk/r/[A-Za-z0-9_-]+", tcp_text, re.I)
-node_url = node_match[-1] if node_match else ""
-tcp_url = tcp_match[-1] if tcp_match else ""
+node_raw = pathlib.Path(node_log).read_text(encoding="utf-8", errors="replace")
+tcp_raw = pathlib.Path(tcp_log).read_text(encoding="utf-8", errors="replace")
+node_match = node_url_re.findall(node_raw)
+tcp_match = tcp_url_re.findall(tcp_raw)
+
+# NodeQuality currently exits 1 during its normal cleanup even after a report was
+# generated. Treat an observed upstream result URL as a completed test.
+node_exit = 0 if node_match else int(node_rc)
+tcp_exit = int(tcp_rc)
 
 payload = {
-    "nodeQuality": {"url": node_url, "exitCode": int(node_rc), "log": node_text},
-    "tcpQuality": {"url": tcp_url, "exitCode": int(tcp_rc), "log": tcp_text},
+    "nodeQuality": {
+        "exitCode": node_exit,
+        "log": clean_log(node_log, "node"),
+    },
+    "tcpQuality": {
+        "exitCode": tcp_exit,
+        "log": clean_log(tcp_log, "tcp"),
+    },
     "client": {"version": version},
 }
 pathlib.Path(out).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-pathlib.Path(meta_out).write_text(json.dumps({"node": node_url, "tcp": tcp_url}), encoding="utf-8")
 PYJSON
 
 headers=(-H 'content-type: application/json')
@@ -199,12 +358,7 @@ print(value)
 PY
 ) || { echo "[x] Worker returned an invalid report URL" >&2; exit 1; }
 
+# Keep the final terminal output intentionally minimal: the BaseTest report URL
+# is the last and only report link shown to the user.
 echo
-echo "============================================================"
-echo " BaseTest report"
-echo "============================================================"
 echo "$REPORT_URL"
-
-if [[ "$node_rc" -ne 0 || "$tcp_rc" -ne 0 ]]; then
-  echo "[!] One upstream test exited non-zero: NodeQuality=$node_rc TcpQuality=$tcp_rc" >&2
-fi
