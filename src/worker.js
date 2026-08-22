@@ -592,9 +592,78 @@ function splitNodeQuality(log) {
     .map(textOf)
     .join("\n\n");
 
+  const cleanIpReport = (value) => {
+    const lines = String(value || "").split("\n");
+    const output = [];
+
+    let family = "";
+
+    for (const rawLine of lines) {
+      const line = stripAnsi(rawLine).trim();
+
+      if (!family) {
+        const title = line.match(
+          /(?:IP质量体检报告(?:\(Lite\))?|IP\s+QUALITY.*REPORT(?:\(LITE\))?)\s*[:：]\s*(.+)$/i
+        );
+
+        if (title) {
+          const address = String(title[1] || "").trim();
+
+          if (address.includes(":")) {
+            family = "ipv6";
+          } else if (/\d{1,3}(?:\.\d{1,3}|\.\*){3}/.test(address)) {
+            family = "ipv4";
+          }
+        }
+      }
+
+      const prompt = line.match(
+        /^\[([0-9A-Fa-f:.*]+)\]#/
+      );
+
+      if (prompt) {
+        const address = prompt[1];
+
+        const promptFamily =
+          address.includes(":")
+            ? "ipv6"
+            : address.includes(".")
+              ? "ipv4"
+              : "";
+
+        // 下一协议族已经开始运行：
+        // 当前正式报告到这里结束。
+        if (
+          family &&
+          promptFamily &&
+          promptFamily !== family
+        ) {
+          break;
+        }
+
+        // 同协议族的数据库检测、进度等运行过程不展示。
+        continue;
+      }
+
+      output.push(rawLine);
+    }
+
+    while (
+      output.length &&
+      !stripAnsi(output[output.length - 1]).trim()
+    ) {
+      output.pop();
+    }
+
+    return output.join("\n").trim();
+  };
+
   const ipReports = reports
     .filter((x) => x.type === "ip")
-    .map(textOf);
+    .map((report) =>
+      cleanIpReport(textOf(report))
+    )
+    .filter(Boolean);
 
   const netReports = reports
     .filter((x) => x.type === "net")
