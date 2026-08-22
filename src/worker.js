@@ -470,6 +470,143 @@ function stripAnsi(value) {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
+function isNodeSponsorNoise(value) {
+  const plain = stripAnsi(value).trim();
+
+  if (!plain) {
+    return false;
+  }
+
+  const compact = plain
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "");
+
+  if (compact.length < 18) {
+    return false;
+  }
+
+  // Check.Place 启动时可能出现的大型赞助商 ASCII。
+  if (/^[SPONR]+$/.test(compact)) {
+    return true;
+  }
+
+  if (/^[RAPIDPROXY]+$/.test(compact)) {
+    return true;
+  }
+
+  return false;
+}
+
+function cleanNodeSection(value, kind) {
+  const lines = String(value || "").split("\n");
+
+  const startPatterns = {
+    basic:
+      /(?:硬件质量体检报告|Hardware\s+Quality.*Report)/i,
+
+    ip:
+      /(?:IP质量体检报告|IP\s+Quality.*Report)/i,
+
+    network:
+      /(?:网络质量体检报告|Network\s+Quality.*Report)/i,
+
+    route:
+      /(?:网络质量体检报告|Network\s+Quality.*Report)/i,
+  };
+
+  const pattern = startPatterns[kind];
+
+  if (!pattern) {
+    return "";
+  }
+
+  let start = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (pattern.test(stripAnsi(lines[i]))) {
+      start = i;
+      break;
+    }
+  }
+
+  // 没找到真正报告标题：
+  // 说明这项没有产生有效测试结果。
+  if (start < 0) {
+    return "";
+  }
+
+  // 把报告标题上面那条分隔线一起保留。
+  if (start > 0) {
+    const previous =
+      stripAnsi(lines[start - 1]).trim();
+
+    if (/^[+*#=_-]{20,}$/.test(previous)) {
+      start -= 1;
+    }
+  }
+
+  const result = [];
+
+  for (let i = start; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const plain =
+      stripAnsi(rawLine).trim();
+
+    // 上游测试统计到这里就结束。
+    // BaseTest 使用自己的报告时间和计数。
+    if (
+      /^今日(?:硬件|IP|网络).*检测量\s*[:：]/i
+        .test(plain)
+    ) {
+      break;
+    }
+
+    if (/^总检测量\s*[:：]/i.test(plain)) {
+      break;
+    }
+
+    if (/^报告链接\s*[:：]/i.test(plain)) {
+      break;
+    }
+
+    if (
+      /^(安装后清理|清理中，请稍后|Clean Up after Installation|Cleaning,\s*please wait)/i
+        .test(plain)
+    ) {
+      break;
+    }
+
+    if (/nodequality\.com\/r\//i.test(plain)) {
+      break;
+    }
+
+    // 防止赞助商 ASCII 混入正式内容。
+    if (isNodeSponsorNoise(rawLine)) {
+      continue;
+    }
+
+    result.push(
+      rawLine.replace(/\s+$/, "")
+    );
+  }
+
+  while (
+    result.length &&
+    !stripAnsi(result[0]).trim()
+  ) {
+    result.shift();
+  }
+
+  while (
+    result.length &&
+    !stripAnsi(result[result.length - 1]).trim()
+  ) {
+    result.pop();
+  }
+
+  return result.join("\n").trim();
+}
+
 function splitNodeQuality(log) {
   const buckets = {
     basic: [],
@@ -482,39 +619,69 @@ function splitNodeQuality(log) {
   let current = "";
 
   for (const rawLine of raw.split("\n")) {
-    const line = stripAnsi(rawLine).trim();
+    const line =
+      stripAnsi(rawLine).trim();
 
-    if (/^(正在运行硬件质量测试|Running\s+Hardware\s+Quality\s+Test)/i.test(line)) {
+    if (
+      /^(正在运行硬件质量测试|Running\s+Hardware\s+Quality\s+Test)/i
+        .test(line)
+    ) {
       current = "basic";
       continue;
     }
 
-    if (/^(正在运行\s*IP\s*质量测试|Running\s+IP\s+Quality\s+Test)/i.test(line)) {
+    if (
+      /^(正在运行\s*IP\s*质量测试|Running\s+IP\s+Quality\s+Test)/i
+        .test(line)
+    ) {
       current = "ip";
       continue;
     }
 
-    if (/^(正在运行网络质量测试|Running\s+Network\s+Quality\s+Test)/i.test(line)) {
+    if (
+      /^(正在运行网络质量测试|Running\s+Network\s+Quality\s+Test)/i
+        .test(line)
+    ) {
       current = "network";
       continue;
     }
 
-    if (/^(正在运行回程路由追踪|Running\s+Backroute\s+Trace)/i.test(line)) {
+    if (
+      /^(正在运行回程路由追踪|Running\s+Backroute\s+Trace)/i
+        .test(line)
+    ) {
       current = "route";
       continue;
     }
 
-    // 测试真正开始之前的 Logo、安装、下载、清理信息全部丢弃
-    if (!current) continue;
+    if (!current) {
+      continue;
+    }
 
     buckets[current].push(rawLine);
   }
 
-  for (const key of Object.keys(buckets)) {
-    buckets[key] = buckets[key].join("\n").trim();
-  }
+  return {
+    basic: cleanNodeSection(
+      buckets.basic.join("\n"),
+      "basic"
+    ),
 
-  return buckets;
+    ip: cleanNodeSection(
+      buckets.ip.join("\n"),
+      "ip"
+    ),
+
+    network: cleanNodeSection(
+      buckets.network.join("\n"),
+      "network"
+    ),
+
+    route: cleanNodeSection(
+      buckets.route.join("\n"),
+      "route"
+    ),
+  };
 }
 
 function splitTcpQuality(log) {
