@@ -617,68 +617,106 @@ function trimRouteNodeQualityHeader(value) {
 }
 
 function routeBodyToHtml(value) {
-  const body = String(value || "").replace(/\r/g, "");
-  const html = body
+  return String(value || "")
+    .replace(/\r/g, "")
     .split("\n")
-    .map((line) => (line ? ansiToHtml(line) : "&nbsp;"))
+    .map((line) =>
+      line
+        ? ansiToHtml(line)
+        : ""
+    )
     .join("\n");
-
-  return `<div style="white-space:pre;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,monospace;line-height:1.56;font-size:13.5px;">${html}</div>`;
 }
 
 function routeNodeQualityMarkup(value, extraClass = "") {
-  const rawBlocks = splitRouteNodeQualityReports(value);
+  const rawBlocks =
+    splitRouteNodeQualityReports(value);
 
   if (!rawBlocks.length) {
-    return baseNodeQualityMarkup(value, extraClass);
+    return baseNodeQualityMarkup(
+      value,
+      extraClass
+    );
   }
 
-  const normalized = rawBlocks.map((block, index) => ({
-    family: detectRouteReportFamily(block, index, rawBlocks.length),
-    content: trimRouteNodeQualityHeader(block) || block,
-  }));
+  const normalized =
+    rawBlocks.map((block, index) => ({
+      family:
+        detectRouteReportFamily(
+          block,
+          index,
+          rawBlocks.length
+        ),
 
-  const unique = [];
-  const used = new Set();
+      content:
+        trimRouteNodeQualityHeader(block) ||
+        block,
+    }));
+
+  // 不再把重复协议族强行翻成另一种。
+  // 同协议族如果出现多段，就合并到同一张卡。
+  const grouped = new Map();
 
   for (const item of normalized) {
-    if (!used.has(item.family)) {
-      unique.push(item);
-      used.add(item.family);
-    } else {
-      unique.push({
-        family: item.family === "IPv4" ? "IPv6" : "IPv4",
-        content: item.content,
-      });
+    if (!grouped.has(item.family)) {
+      grouped.set(item.family, []);
+    }
+
+    if (item.content) {
+      grouped
+        .get(item.family)
+        .push(item.content);
     }
   }
 
-  const cards = unique
-    .map((item) => {
-      const family = item.family;
-      const title = `${family} 三网回程路由`;
+  const items = [
+    "IPv4",
+    "IPv6",
+  ]
+    .filter((family) =>
+      grouped.has(family)
+    )
+    .map((family) => ({
+      family,
 
-      const pillStyle =
-        family === "IPv6"
-          ? "display:inline-flex;align-items:center;justify-content:center;min-width:68px;height:34px;padding:0 14px;border-radius:999px;background:rgba(25,185,255,.12);border:1px solid rgba(25,185,255,.28);color:#56d6ff;font-weight:800;font-size:13px;"
-          : "display:inline-flex;align-items:center;justify-content:center;min-width:68px;height:34px;padding:0 14px;border-radius:999px;background:rgba(53,214,123,.12);border:1px solid rgba(53,214,123,.28);color:#54ea8f;font-weight:800;font-size:13px;";
+      content:
+        grouped
+          .get(family)
+          .join("\n\n"),
+    }));
+
+  const cards = items
+    .map((item) => {
+      const title =
+        `${item.family} 三网回程路由`;
 
       return `
-        <div style="border:1px solid rgba(120,140,190,.18);border-radius:20px;overflow:hidden;background:rgba(6,10,18,.55);margin:0 0 16px 0;">
-          <div style="display:flex;align-items:center;gap:14px;padding:16px 18px;border-bottom:1px solid rgba(255,255,255,.08);">
-            <span style="${pillStyle}">${family}</span>
-            <div style="font-size:15px;font-weight:800;color:#f2f6ff;letter-spacing:.01em;">${title}</div>
+        <div class="ip-subcard">
+          <div class="ip-subhead">
+            <span>${item.family}</span>
+            <strong>${title}</strong>
           </div>
-          <div style="padding:16px 18px 18px 18px;">
-            ${routeBodyToHtml(item.content)}
-          </div>
+
+          <pre class="report-output ip-suboutput">${routeBodyToHtml(
+            item.content
+          )}</pre>
         </div>
       `;
     })
     .join("");
 
-  return `<div class="${extraClass}" style="display:block;">${cards}</div>`;
+  const extra =
+    extraClass
+      ? ` ${extraClass}`
+      : "";
+
+  return (
+    `<div class="ip-sublist${extra}">` +
+    cards +
+    `</div>`
+  );
 }
+
 
 function baseNodeQualityMarkup(value, extraClass = "") {
   const lines = String(value || "")
