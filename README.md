@@ -25,9 +25,34 @@ https://basetest.aniya.site/r/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ## 报告
 
-BaseTest 报告采用报告查看器形式：支持「全部 / 基本信息 / IP质量 / 网络质量 / 回程路由 / TCP质量」分类切换，并提供复制文本、NodeSeek 格式和通用 Markdown。NodeQuality 与 TcpQuality 的结果都直接显示在同一个 BaseTest 页面中，不嵌套上游网页，也不要求跳转到其它报告站。
+BaseTest 报告采用统一报告查看器，NodeQuality 与 TcpQuality 的测试结果全部显示在同一个 BaseTest 页面中，不嵌套上游网页，也不需要分别打开两个上游报告站。
 
-示例格式：
+报告页面固定提供以下分类：
+
+- 全部
+- 基本信息
+- IP质量
+- 网络质量
+- 回程路由
+- IPv4回程
+- IPv4大包回程
+- IPv6回程
+- 教育网回程
+- 国际互联
+- 单线程测速
+
+「全部」页面只显示实际存在测试数据的栏目；单独进入未测试栏目时仍保留对应标签和报告区域，方便保持不同报告之间一致的页面结构。
+
+报告页面提供：
+
+- 复制文本
+- 复制为 NodeSeek 格式
+- 复制为通用 Markdown
+- 复制 BaseTest 报告链接
+
+NodeSeek 导出采用 `Tabs + ANSI` 格式。各个有数据的测试栏目分别作为 Tab 输出，并保留 ANSI 彩色终端效果；不依赖 PNG 图片、Browser Run 或第三方图床。
+
+示例报告地址：
 
 ```text
 https://basetest.aniya.site/r/<report-id>
