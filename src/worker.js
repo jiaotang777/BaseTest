@@ -381,6 +381,59 @@ function splitNodeQuality(log) {
   return buckets;
 }
 
+function splitTcpQuality(log) {
+  const buckets = {
+    ipv4: [],
+    large4: [],
+    ipv6: [],
+    education: [],
+    international: [],
+    speedtest: [],
+  };
+
+  let current = "";
+  const allLines = String(log || "").split("\n");
+
+  // TcpQuality 在测试过程中也会输出进度。
+  // 这里只从最后一次“报告时间”之后解析最终报告，避免混入测试进度。
+  let start = 0;
+  for (let i = 0; i < allLines.length; i++) {
+    if (/报告时间[:：]/.test(stripAnsi(allLines[i]))) {
+      start = i + 1;
+    }
+  }
+
+  const lines = allLines.slice(start);
+
+  for (const rawLine of lines) {
+    const line = stripAnsi(rawLine).trim();
+
+    if (/^IPv4回程\s+统计摘要/.test(line)) {
+      current = "ipv4";
+    } else if (/^IPv4大包回程\s+统计摘要/.test(line)) {
+      current = "large4";
+    } else if (/^IPv6回程\s+统计摘要/.test(line)) {
+      current = "ipv6";
+    } else if (/^(?:教育网回程|CERNET-IPv4|CERNET2-IPv6)\s+统计摘要/.test(line)) {
+      current = "education";
+    } else if (/^(?:国际节点TCP互联测试|常用网站\s+国际互联|常用\s+CDN\s+国际互联)/.test(line)) {
+      current = "international";
+    } else if (/^单线程测速$/.test(line)) {
+      current = "speedtest";
+    }
+
+    if (current) {
+      buckets[current].push(rawLine);
+    }
+  }
+
+  for (const key of Object.keys(buckets)) {
+    buckets[key] = buckets[key].join("\n").trim();
+  }
+
+  return buckets;
+}
+
 function normalizePlain(value) {
   return stripAnsi(value)
     .replace(/\r/g, "")
@@ -390,11 +443,22 @@ function normalizePlain(value) {
 
 function buildPlainReport(parts) {
   const blocks = [];
-  if (parts.basic) blocks.push(parts.basic);
-  if (parts.ip) blocks.push(parts.ip);
-  if (parts.network) blocks.push(parts.network);
-  if (parts.route) blocks.push(parts.route);
-  if (parts.tcp) blocks.push(parts.tcp);
+
+  for (const key of [
+    "basic",
+    "ip",
+    "network",
+    "route",
+    "tcpIpv4",
+    "tcpLarge4",
+    "tcpIpv6",
+    "tcpEducation",
+    "tcpInternational",
+    "tcpSpeedtest",
+  ]) {
+    if (parts[key]) blocks.push(parts[key]);
+  }
+
   return normalizePlain(blocks.join("\n\n"));
 }
 
@@ -414,13 +478,19 @@ function buildMarkdownReport(parts) {
   add("IP质量", parts.ip);
   add("网络质量", parts.network);
   add("回程路由", parts.route);
-  add("TCP质量", parts.tcp);
+  add("IPv4回程", parts.tcpIpv4);
+  add("IPv4大包回程", parts.tcpLarge4);
+  add("IPv6回程", parts.tcpIpv6);
+  add("教育网回程", parts.tcpEducation);
+  add("国际互联", parts.tcpInternational);
+  add("单线程测速", parts.tcpSpeedtest);
   return `# BaseTest\n\n${blocks.join("\n\n")}`;
 }
 
 function sectionMarkup(key, title, source, value, index) {
   const content = String(value || "").trim();
-  if (!content) return "";
+
+  // 无数据时板块仍然保留，只留空内容。
   return `
     <section class="report-section" data-section="${esc(key)}">
       <div class="section-head">
@@ -428,7 +498,7 @@ function sectionMarkup(key, title, source, value, index) {
         <h2>${esc(title)}</h2>
         <span class="section-source">${esc(source)}</span>
       </div>
-      <pre class="report-output">${ansiToHtml(content)}</pre>
+      <pre class="report-output${content ? "" : " empty-output"}">${content ? ansiToHtml(content) : ""}</pre>
     </section>`;
 }
 
@@ -436,37 +506,58 @@ function reportPage(report) {
   const nq = report.nodeQuality || {};
   const tq = report.tcpQuality || {};
   const node = splitNodeQuality(nq.log || "");
+  const tcp = splitTcpQuality(tq.log || "");
+
   const parts = {
     basic: node.basic,
     ip: node.ip,
     network: node.network,
     route: node.route,
-    tcp: String(tq.log || "").trim(),
+
+    tcpIpv4: tcp.ipv4,
+    tcpLarge4: tcp.large4,
+    tcpIpv6: tcp.ipv6,
+    tcpEducation: tcp.education,
+    tcpInternational: tcp.international,
+    tcpSpeedtest: tcp.speedtest,
   };
   const plain = buildPlainReport(parts);
   const nodeSeek = buildNodeSeekReport(parts);
   const markdown = buildMarkdownReport(parts);
 
+  // 板块固定显示，不因为没有数据而隐藏。
   const available = [
-    ["basic", "基本信息", !!parts.basic],
-    ["ip", "IP质量", !!parts.ip],
-    ["network", "网络质量", !!parts.network],
-    ["route", "回程路由", !!parts.route],
-    ["tcp", "TCP质量", !!parts.tcp],
+    ["basic", "基本信息"],
+    ["ip", "IP质量"],
+    ["network", "网络质量"],
+    ["route", "回程路由"],
+
+    ["tcp-ipv4", "IPv4回程"],
+    ["tcp-large4", "IPv4大包回程"],
+    ["tcp-ipv6", "IPv6回程"],
+    ["tcp-education", "教育网回程"],
+    ["tcp-international", "国际互联"],
+    ["tcp-speedtest", "单线程测速"],
   ];
 
   const tabs = available
-    .filter(([, , enabled]) => enabled)
     .map(([key, label]) => `<button class="tab" type="button" role="tab" data-report-tab="${esc(key)}">${esc(label)}</button>`)
     .join("");
 
   let index = 1;
+
   const sections = [
     sectionMarkup("basic", "基本信息", "NodeQuality", parts.basic, index++),
     sectionMarkup("ip", "IP质量", "NodeQuality", parts.ip, index++),
     sectionMarkup("network", "网络质量", "NodeQuality", parts.network, index++),
     sectionMarkup("route", "回程路由", "NodeQuality", parts.route, index++),
-    sectionMarkup("tcp", "TCP质量", "TcpQuality", parts.tcp, index++),
+
+    sectionMarkup("tcp-ipv4", "IPv4回程", "TcpQuality", parts.tcpIpv4, index++),
+    sectionMarkup("tcp-large4", "IPv4大包回程", "TcpQuality", parts.tcpLarge4, index++),
+    sectionMarkup("tcp-ipv6", "IPv6回程", "TcpQuality", parts.tcpIpv6, index++),
+    sectionMarkup("tcp-education", "教育网回程", "TcpQuality", parts.tcpEducation, index++),
+    sectionMarkup("tcp-international", "国际互联", "TcpQuality", parts.tcpInternational, index++),
+    sectionMarkup("tcp-speedtest", "单线程测速", "TcpQuality", parts.tcpSpeedtest, index++),
   ].join("");
 
   const nodeFailed = nq.exitCode !== null && nq.exitCode !== 0;
@@ -539,7 +630,7 @@ function notFoundPage() {
 
 function pageShell(body, title) {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>${esc(title)}</title><style>
-  :root{color-scheme:dark;--bg:#0d0f12;--surface:#14171c;--surface2:#191d23;--line:#2a3038;--line2:#363d47;--text:#e7ebf0;--muted:#8c96a3;--soft:#b7c0cb;--green:#42d392;--green-bg:#14261f;--yellow:#f0c66b;--yellow-bg:#292217;--blue:#73a7ff;--shadow:0 18px 50px rgba(0,0,0,.24)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.sitebar{border-bottom:1px solid var(--line);background:rgba(13,15,18,.92);position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}.sitebar-inner{height:56px;width:min(1080px,calc(100% - 28px));margin:0 auto;display:flex;align-items:center;justify-content:space-between}.wordmark{color:var(--text);font-weight:850;letter-spacing:-.02em;text-decoration:none;font-size:17px}.wordmark:before{content:"●";color:var(--green);font-size:10px;margin-right:9px;vertical-align:2px}.repo-link{color:var(--muted);text-decoration:none;font-size:13px}.repo-link:hover{color:var(--text)}.viewer{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:34px 0 26px}.viewer-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.kicker{font:750 11px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);letter-spacing:.13em;text-transform:uppercase}.viewer-head h1,.landing h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.045em;line-height:1.05;margin:9px 0 8px}.meta{margin:0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.state{flex:none;border:1px solid #23543f;background:var(--green-bg);color:var(--green);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:750}.state.warn{border-color:#5b4924;background:var(--yellow-bg);color:var(--yellow)}.actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);margin-bottom:18px}.action{appearance:none;text-align:left;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text);padding:13px 15px;cursor:pointer;min-height:64px}.action:last-child{border-right:0}.action:hover{background:var(--surface2)}.action strong,.action span{display:block}.action strong{font-size:13px}.action span{font-size:11px;color:var(--muted);margin-top:3px}.tabs{display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:0 0 10px}.tabs::-webkit-scrollbar{display:none}.tab{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;white-space:nowrap;font-weight:700;font-size:12px;cursor:pointer}.tab:hover{border-color:var(--line2);color:var(--text)}.tab.active{background:var(--text);border-color:var(--text);color:#0d0f12}.report-document{border:1px solid var(--line);border-radius:12px;background:#101216;box-shadow:var(--shadow);overflow:hidden}.report-section{padding:0 18px}.report-section+.report-section{border-top:1px solid var(--line)}.section-head{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(42,48,56,.55)}.section-no{font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#596370}.section-head h2{font-size:14px;margin:0;letter-spacing:.01em}.section-source{margin-left:auto;color:var(--muted);font:10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.report-output{margin:0;padding:17px 0 23px;overflow-x:auto;white-space:pre;tab-size:4;color:#d8dee8;font:12px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace}.report-section[hidden]{display:none}.empty{padding:40px;text-align:center;color:var(--muted)}.copy-buffer{position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none}.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,18px);background:#eef2f6;color:#111827;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:750;opacity:0;pointer-events:none;transition:.18s ease;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.footer{width:min(1080px,calc(100% - 28px));margin:0 auto;border-top:1px solid var(--line);padding:20px 0 32px;color:#65707d;text-align:center;font-size:11px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:16px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--surface);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.viewer{width:calc(100% - 16px);padding-top:23px}.sitebar-inner,.footer{width:calc(100% - 20px)}.viewer-head{align-items:flex-start;flex-direction:column;gap:12px}.actions{grid-template-columns:repeat(2,minmax(0,1fr))}.action:nth-child(2){border-right:0}.action:nth-child(-n+2){border-bottom:1px solid var(--line)}.report-section{padding:0 10px}.section-head{height:47px}.report-output{font-size:10.5px;line-height:1.45;padding-top:14px;padding-bottom:18px}.tabs{margin-left:-2px}.landing{padding-top:10vh}}@media(max-width:430px){.actions{box-shadow:none}.action{padding:11px 12px;min-height:58px}.action strong{font-size:12px}.action span{font-size:10px}.viewer-head h1{font-size:34px}}
+  :root{color-scheme:dark;--bg:#0d0f12;--surface:#14171c;--surface2:#191d23;--line:#2a3038;--line2:#363d47;--text:#e7ebf0;--muted:#8c96a3;--soft:#b7c0cb;--green:#42d392;--green-bg:#14261f;--yellow:#f0c66b;--yellow-bg:#292217;--blue:#73a7ff;--shadow:0 18px 50px rgba(0,0,0,.24)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.sitebar{border-bottom:1px solid var(--line);background:rgba(13,15,18,.92);position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}.sitebar-inner{height:56px;width:min(1080px,calc(100% - 28px));margin:0 auto;display:flex;align-items:center;justify-content:space-between}.wordmark{color:var(--text);font-weight:850;letter-spacing:-.02em;text-decoration:none;font-size:17px}.wordmark:before{content:"●";color:var(--green);font-size:10px;margin-right:9px;vertical-align:2px}.repo-link{color:var(--muted);text-decoration:none;font-size:13px}.repo-link:hover{color:var(--text)}.viewer{width:min(1080px,calc(100% - 28px));margin:0 auto;padding:34px 0 26px}.viewer-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.kicker{font:750 11px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green);letter-spacing:.13em;text-transform:uppercase}.viewer-head h1,.landing h1{font-size:clamp(30px,5vw,48px);letter-spacing:-.045em;line-height:1.05;margin:9px 0 8px}.meta{margin:0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.state{flex:none;border:1px solid #23543f;background:var(--green-bg);color:var(--green);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:750}.state.warn{border-color:#5b4924;background:var(--yellow-bg);color:var(--yellow)}.actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);margin-bottom:18px}.action{appearance:none;text-align:left;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text);padding:13px 15px;cursor:pointer;min-height:64px}.action:last-child{border-right:0}.action:hover{background:var(--surface2)}.action strong,.action span{display:block}.action strong{font-size:13px}.action span{font-size:11px;color:var(--muted);margin-top:3px}.tabs{display:flex;flex-wrap:wrap;gap:7px;overflow:visible;padding:0 0 10px}.tabs::-webkit-scrollbar{display:none}.tab{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;white-space:nowrap;font-weight:700;font-size:12px;cursor:pointer}.tab:hover{border-color:var(--line2);color:var(--text)}.tab.active{background:var(--text);border-color:var(--text);color:#0d0f12}.report-document{border:1px solid var(--line);border-radius:12px;background:#101216;box-shadow:var(--shadow);overflow:hidden}.report-section{padding:0 18px}.report-section+.report-section{border-top:1px solid var(--line)}.section-head{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(42,48,56,.55)}.section-no{font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#596370}.section-head h2{font-size:14px;margin:0;letter-spacing:.01em}.section-source{margin-left:auto;color:var(--muted);font:10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.report-output{margin:0;padding:17px 0 23px;overflow-x:auto;white-space:pre;tab-size:4;color:#d8dee8;font:12px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace}.report-output.empty-output{min-height:58px}.report-section[hidden]{display:none}.empty{padding:40px;text-align:center;color:var(--muted)}.copy-buffer{position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none}.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,18px);background:#eef2f6;color:#111827;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:750;opacity:0;pointer-events:none;transition:.18s ease;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.footer{width:min(1080px,calc(100% - 28px));margin:0 auto;border-top:1px solid var(--line);padding:20px 0 32px;color:#65707d;text-align:center;font-size:11px}.landing{width:min(860px,calc(100% - 32px));margin:0 auto;padding:14vh 0}.landing p{color:var(--muted);font-size:16px}.landing code{display:block;margin-top:26px;padding:16px 18px;border:1px solid var(--line);background:var(--surface);border-radius:10px;overflow:auto;white-space:nowrap;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.viewer{width:calc(100% - 16px);padding-top:23px}.sitebar-inner,.footer{width:calc(100% - 20px)}.viewer-head{align-items:flex-start;flex-direction:column;gap:12px}.actions{grid-template-columns:repeat(2,minmax(0,1fr))}.action:nth-child(2){border-right:0}.action:nth-child(-n+2){border-bottom:1px solid var(--line)}.report-section{padding:0 10px}.section-head{height:47px}.report-output{font-size:10.5px;line-height:1.45;padding-top:14px;padding-bottom:18px}.tabs{margin-left:-2px}.landing{padding-top:10vh}}@media(max-width:430px){.actions{box-shadow:none}.action{padding:11px 12px;min-height:58px}.action strong{font-size:12px}.action span{font-size:10px}.viewer-head h1{font-size:34px}}
   </style></head><body>${body}</body></html>`;
 }
 
