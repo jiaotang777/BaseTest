@@ -499,68 +499,76 @@ function isRouteNodeQualityContent(value) {
   return /回程路由|教育网回程|国际互联网|单线程测速/.test(plain);
 }
 
+
 function splitRouteNodeQualityReports(value) {
   const lines = String(value || "").replace(/\r/g, "").split("\n");
   const blocks = [];
   let current = [];
 
-  const hasContent = (arr) =>
-    arr.some((line) => stripAnsi(line).trim() !== "");
+  const flush = () => {
+    const text = current.join("\n").trim();
+    if (text) blocks.push(text);
+    current = [];
+  };
+
+  const isBlockBoundary = (plain) => {
+    return /^(?:IP|网络|硬件)质量(?:体检)?报告[:：]/.test(plain);
+  };
 
   for (const rawLine of lines) {
     const plain = stripAnsi(rawLine).trim();
 
-    if (
-      /^(?:IP|网络|硬件)质量(?:体检)?报告[:：]/.test(plain) &&
-      hasContent(current)
-    ) {
-      blocks.push(current.join("\n").trim());
-      current = [rawLine];
-      continue;
+    if (isBlockBoundary(plain) && current.length) {
+      flush();
     }
 
     current.push(rawLine);
   }
 
-  if (hasContent(current)) {
-    blocks.push(current.join("\n").trim());
-  }
+  flush();
 
   return blocks.filter(Boolean);
 }
 
-function detectRouteReportFamily(value) {
+function countMaskedIPv4(text) {
+  const m = String(text || "").match(/\b(?:\d{1,3}\.){2,3}(?:\d{1,3}|\*+)\b/g);
+  return m ? m.length : 0;
+}
+
+function countLikelyIPv6(text) {
+  const m = String(text || "").match(/(?:(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:*]{0,4})/g);
+  return m ? m.length : 0;
+}
+
+function detectRouteReportFamily(value, index = 0, total = 1) {
   const plain = stripAnsi(String(value || ""));
 
-  if (/(^|\n)\s*IPv6\b/i.test(plain)) return "IPv6";
   if (/(^|\n)\s*IPv4\b/i.test(plain)) return "IPv4";
+  if (/(^|\n)\s*IPv6\b/i.test(plain)) return "IPv6";
 
-  const v6Like = /(?:^|[^0-9])(?:[0-9a-f]{1,4}:){2,}[0-9a-f:*]{1,}/i.test(plain);
-  const v4Like = /\b(?:\d{1,3}\.){2,3}(?:\d{1,3}|\*+)\b/.test(plain);
+  const v4Count = countMaskedIPv4(plain);
+  const v6Count = countLikelyIPv6(plain);
 
-  if (v6Like && !v4Like) return "IPv6";
+  if (v4Count > v6Count) return "IPv4";
+  if (v6Count > v4Count) return "IPv6";
+
+  if (total === 2) {
+    return index === 0 ? "IPv4" : "IPv6";
+  }
+
   return "IPv4";
 }
 
 function trimRouteNodeQualityHeader(value) {
   const lines = String(value || "").replace(/\r/g, "").split("\n");
   const kept = [];
-  let started = false;
 
   for (const rawLine of lines) {
     const plain = stripAnsi(rawLine).trim();
+    const compact = plain.replace(/\s+/g, "");
 
-    if (!started) {
-      if (
-        /^(?:[一二三四五六七八九十]+、)?(?:三网)?回程路由/.test(plain) ||
-        /^(?:IPv4|IPv6)\s*回程路由/i.test(plain) ||
-        /^教育网回程/.test(plain) ||
-        /^国际互联网/.test(plain) ||
-        /^单线程测速/.test(plain)
-      ) {
-        started = true;
-        kept.push(rawLine);
-      }
+    if (!plain) {
+      kept.push(rawLine);
       continue;
     }
 
@@ -569,11 +577,16 @@ function trimRouteNodeQualityHeader(value) {
     if (/^bash\s+<\(curl\b/i.test(plain)) continue;
     if (/^报告时间[:：]/.test(plain)) continue;
     if (/^脚本版本[:：]/.test(plain)) continue;
+    if (/^(?:五|六|七|八|九|十)[、，]\s*三网回程路由/.test(plain)) continue;
+    if (/^(?:三网回程路由|回程路由)\b/.test(plain)) continue;
+    if (/^(?:IPv4|IPv6)\s*三网回程路由/.test(plain)) continue;
+    if (/^(?:IPv4|IPv6)\s*回程路由/.test(plain)) continue;
+    if (/^(?:[*#=+\-]{16,}|[─━═]{8,}|[·•.]{16,})$/.test(compact)) continue;
 
     kept.push(rawLine);
   }
 
-  return kept.join("\n").trim();
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function routeBodyToHtml(value) {
@@ -583,7 +596,7 @@ function routeBodyToHtml(value) {
     .map((line) => (line ? ansiToHtml(line) : "&nbsp;"))
     .join("\n");
 
-  return `<div style="white-space:pre;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,monospace;line-height:1.68;font-size:15px;">${html}</div>`;
+  return `<div style="white-space:pre;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,monospace;line-height:1.56;font-size:13.5px;">${html}</div>`;
 }
 
 function routeNodeQualityMarkup(value, extraClass = "") {
@@ -593,25 +606,44 @@ function routeNodeQualityMarkup(value, extraClass = "") {
     return baseNodeQualityMarkup(value, extraClass);
   }
 
-  const cards = rawBlocks
-    .map((block) => {
-      const family = detectRouteReportFamily(block);
-      const title = `${family} 回程路由`;
+  const normalized = rawBlocks.map((block, index) => ({
+    family: detectRouteReportFamily(block, index, rawBlocks.length),
+    content: trimRouteNodeQualityHeader(block) || block,
+  }));
+
+  const unique = [];
+  const used = new Set();
+
+  for (const item of normalized) {
+    if (!used.has(item.family)) {
+      unique.push(item);
+      used.add(item.family);
+    } else {
+      unique.push({
+        family: item.family === "IPv4" ? "IPv6" : "IPv4",
+        content: item.content,
+      });
+    }
+  }
+
+  const cards = unique
+    .map((item) => {
+      const family = item.family;
+      const title = `${family} 三网回程路由`;
+
       const pillStyle =
         family === "IPv6"
-          ? "display:inline-flex;align-items:center;justify-content:center;min-width:90px;height:46px;padding:0 18px;border-radius:999px;background:rgba(25,185,255,.12);border:1px solid rgba(25,185,255,.28);color:#56d6ff;font-weight:800;font-size:15px;"
-          : "display:inline-flex;align-items:center;justify-content:center;min-width:90px;height:46px;padding:0 18px;border-radius:999px;background:rgba(53,214,123,.12);border:1px solid rgba(53,214,123,.28);color:#54ea8f;font-weight:800;font-size:15px;";
-
-      const cleaned = trimRouteNodeQualityHeader(block) || block;
+          ? "display:inline-flex;align-items:center;justify-content:center;min-width:68px;height:34px;padding:0 14px;border-radius:999px;background:rgba(25,185,255,.12);border:1px solid rgba(25,185,255,.28);color:#56d6ff;font-weight:800;font-size:13px;"
+          : "display:inline-flex;align-items:center;justify-content:center;min-width:68px;height:34px;padding:0 14px;border-radius:999px;background:rgba(53,214,123,.12);border:1px solid rgba(53,214,123,.28);color:#54ea8f;font-weight:800;font-size:13px;";
 
       return `
-        <div style="border:1px solid rgba(120,140,190,.18);border-radius:22px;overflow:hidden;background:rgba(6,10,18,.55);margin:0 0 18px 0;">
-          <div style="display:flex;align-items:center;gap:16px;padding:18px 22px;border-bottom:1px solid rgba(255,255,255,.08);">
+        <div style="border:1px solid rgba(120,140,190,.18);border-radius:20px;overflow:hidden;background:rgba(6,10,18,.55);margin:0 0 16px 0;">
+          <div style="display:flex;align-items:center;gap:14px;padding:16px 18px;border-bottom:1px solid rgba(255,255,255,.08);">
             <span style="${pillStyle}">${family}</span>
-            <div style="font-size:18px;font-weight:800;color:#f2f6ff;letter-spacing:.01em;">${title}</div>
+            <div style="font-size:15px;font-weight:800;color:#f2f6ff;letter-spacing:.01em;">${title}</div>
           </div>
-          <div style="padding:20px 22px 22px 22px;">
-            ${routeBodyToHtml(cleaned)}
+          <div style="padding:16px 18px 18px 18px;">
+            ${routeBodyToHtml(item.content)}
           </div>
         </div>
       `;
@@ -620,7 +652,6 @@ function routeNodeQualityMarkup(value, extraClass = "") {
 
   return `<div class="${extraClass}" style="display:block;">${cards}</div>`;
 }
-
 
 function baseNodeQualityMarkup(value, extraClass = "") {
   const lines = String(value || "")
