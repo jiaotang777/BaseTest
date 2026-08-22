@@ -694,6 +694,17 @@ function splitNodeQuality(log) {
     for (const rawLine of lines) {
       const line = stripAnsi(rawLine).trim();
 
+      // NodeQuality 正式报告结束后会执行打包和上传。
+      // 一旦进入 zip/curl 阶段，后面的内容全部不属于报告正文。
+      if (
+        /^adding:\s+/i.test(line) ||
+        /^zip warning:/i.test(line) ||
+        /^% Total\s+% Received\s+% Xferd/i.test(line) ||
+        /^Dload\s+Upload\s+Total\s+Spent/i.test(line)
+      ) {
+        break;
+      }
+
       if (!family) {
         const title = line.match(
           /(?:网络质量体检报告|NET(?:WORK)?\s+QUALITY.*REPORT)\s*[:：]\s*(.+)$/i
@@ -748,15 +759,7 @@ function splitNodeQuality(log) {
       !stripAnsi(output[output.length - 1]).trim()
     ) {
       output.pop();
-    }    const joined = output
-      .join("\n")
-      .replace(
-        /(?:^|\n)(?:\s*adding:\s+.*\n|\s*zip warning:.*\n|\s*% Total\s+% Received\s+% Xferd.*\n|\s*Dload\s+Upload\s+Total\s+Spent.*\n|\s*(?:0|100)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+.*\n)+(?=(?:\n\s*报告时间[:：]|\n\s*今日报告次数[:：]|\n\s*累计报告次数[:：]|$))/g,
-        "\n"
-      )
-      .replace(/\n{3,}/g, "\n\n");
-
-    return joined.trim();
+    }    return output.join("\n").trim();
   };
 
   const netReports = reports
