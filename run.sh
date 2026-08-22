@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.4.30"
+VERSION="0.4.31"
 REPORT_BASE_URL="${NQC_REPORT_BASE_URL:-https://basetest.aniya.site}"
 UPLOAD_TOKEN="${NQC_UPLOAD_TOKEN:-}"
 NODEQUALITY_RUN_URL="${NODEQUALITY_RUN_URL:-https://run.NodeQuality.com}"
