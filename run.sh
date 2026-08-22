@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.4.25"
+VERSION="0.4.26"
 REPORT_BASE_URL="${NQC_REPORT_BASE_URL:-https://basetest.aniya.site}"
 UPLOAD_TOKEN="${NQC_UPLOAD_TOKEN:-}"
 NODEQUALITY_RUN_URL="${NODEQUALITY_RUN_URL:-https://run.NodeQuality.com}"
 TCPQUALITY_RUN_URL="${TCPQUALITY_RUN_URL:-https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh}"
-MAX_LOG_BYTES="${NQC_MAX_LOG_BYTES:-700000}"
+MAX_LOG_BYTES="${NQC_MAX_LOG_BYTES:-2000000}"
 
 NODE_ARGS=()
 TCP_ARGS=()
@@ -349,8 +349,22 @@ def clean_log(path, kind):
     data = csi_non_sgr.sub(b"", data)
     data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     if len(data) > max_bytes:
-        prefix = f"[log truncated: showing last {max_bytes} bytes of {len(data)}]\n".encode()
-        data = prefix + data[-max_bytes:]
+        original_size = len(data)
+        marker = (
+            f"\n[log truncated: original {original_size} bytes; "
+            f"preserving beginning and end]\n"
+        ).encode()
+
+        keep = max(
+            0,
+            (max_bytes - len(marker)) // 2
+        )
+
+        data = (
+            data[:keep]
+            + marker
+            + data[-keep:]
+        )
     text = data.decode("utf-8", errors="replace")
 
     # Remove upstream report URLs and duplicated upstream interactive prompts.

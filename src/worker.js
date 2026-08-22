@@ -1,7 +1,7 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const MAX_BODY_BYTES = 2_500_000;
-const MAX_LOG_CHARS = 700_000;
+const MAX_BODY_BYTES = 8_000_000;
+const MAX_LOG_CHARS = 2_000_000;
 const DEFAULT_REPORT_TTL_SECONDS = 60 * 60 * 24 * 90;
 const MIN_REPORT_TTL_SECONDS = 60;
 const MAX_REPORT_TTL_SECONDS = 60 * 60 * 24 * 365;
