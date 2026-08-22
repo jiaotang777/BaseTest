@@ -678,6 +678,197 @@ function routeGroups(value) {
     }));
 }
 
+function trimNetworkNodeQualityHeader(value) {
+  const lines =
+    String(value || "")
+      .replace(/\r/g, "")
+      .split("\n");
+
+  const kept = [];
+
+  for (const rawLine of lines) {
+    const plain =
+      stripAnsi(rawLine).trim();
+
+    const compact =
+      plain.replace(/\s+/g, "");
+
+    if (!plain) {
+      kept.push(rawLine);
+      continue;
+    }
+
+    // 网络质量卡片自己的标题已经由 BaseTest 绘制，
+    // 所以上游这些元信息不重复显示。
+    if (
+      /^(?:网络质量体检报告|NET(?:WORK)?\s+QUALITY.*REPORT)\s*[:：]/i
+        .test(plain)
+    ) {
+      continue;
+    }
+
+    if (
+      /^https?:\/\/github\.com\//i
+        .test(plain)
+    ) {
+      continue;
+    }
+
+    if (
+      /^bash\s+<\(curl\b/i
+        .test(plain)
+    ) {
+      continue;
+    }
+
+    if (
+      /^(?:报告时间|Report Time)\s*[:：]/i
+        .test(plain)
+    ) {
+      continue;
+    }
+
+    if (
+      /^(?:脚本版本|Script Version)\s*[:：]/i
+        .test(plain)
+    ) {
+      continue;
+    }
+
+    if (
+      /^(?:[*#=+\-]{16,}|[─━═]{8,}|[·•.]{16,})$/
+        .test(compact)
+    ) {
+      continue;
+    }
+
+    // 注意：
+    // BGP / 本地策略 / 接入信息 / 国内测试 /
+    // 国际互联 / 路由路径等全部属于网络质量正文，
+    // 这里一律保留。
+    kept.push(rawLine);
+  }
+
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function networkGroups(value) {
+  const rawBlocks =
+    splitRouteNodeQualityReports(value);
+
+  if (!rawBlocks.length) {
+    return [];
+  }
+
+  const grouped = new Map();
+
+  rawBlocks.forEach((block, index) => {
+    const family =
+      detectRouteReportFamily(
+        block,
+        index,
+        rawBlocks.length
+      );
+
+    const content =
+      trimNetworkNodeQualityHeader(block) ||
+      block;
+
+    if (!grouped.has(family)) {
+      grouped.set(family, []);
+    }
+
+    if (content) {
+      grouped
+        .get(family)
+        .push(content);
+    }
+  });
+
+  return [
+    "IPv4",
+    "IPv6",
+  ]
+    .filter((family) =>
+      grouped.has(family)
+    )
+    .map((family) => ({
+      family,
+
+      content:
+        grouped
+          .get(family)
+          .join("\n\n"),
+    }));
+}
+
+function networkPlainText(value) {
+  const groups =
+    networkGroups(value);
+
+  if (!groups.length) {
+    return normalizePlain(value);
+  }
+
+  return groups
+    .map((item) =>
+      `【${item.family} 网络质量】\n${normalizePlain(
+        item.content
+      )}`
+    )
+    .join("\n\n");
+}
+
+function networkNodeQualityMarkup(
+  value,
+  extraClass = ""
+) {
+  const items =
+    networkGroups(value);
+
+  if (!items.length) {
+    return baseNodeQualityMarkup(
+      value,
+      extraClass
+    );
+  }
+
+  const cards = items
+    .map((item) => {
+      const title =
+        `${item.family} 网络质量`;
+
+      return `
+        <div class="ip-subcard">
+          <div class="ip-subhead">
+            <span>${item.family}</span>
+            <strong>${title}</strong>
+          </div>
+
+          <pre class="report-output ip-suboutput">${routeBodyToHtml(
+            item.content
+          )}</pre>
+        </div>
+      `;
+    })
+    .join("");
+
+  const extra =
+    extraClass
+      ? ` ${extraClass}`
+      : "";
+
+  return (
+    `<div class="ip-sublist${extra}">` +
+    cards +
+    `</div>`
+  );
+}
+
+
 function routePlainText(value) {
   const groups =
     routeGroups(value);
@@ -1134,19 +1325,37 @@ function splitNodeQuality(log) {
     ipv6.push(...ipReports.slice(1));
   }
 
+  const isFullNetworkReport = (report) =>
+    /(?:一、BGP信息|1\.\s*BGP Information|二、本地状态|2\.\s*Local Status|3\.\s*Connectivity)/i
+      .test(stripAnsi(report));
+
+  const hasRouteSection = (report) =>
+    /(?:五、三网回程路由|5\.\s*Route to China Mainland)/i
+      .test(stripAnsi(report));
+
+  // NetQuality 完整报告：
+  // BGP、本地策略、接入、国内测试、国际互联、
+  // 路由路径等都属于「网络质量」。
   const network =
     netReports
       .filter((report) =>
-        /(?:一、BGP信息|1\.\s*BGP Information|二、本地状态|2\.\s*Local Status|3\.\s*Connectivity)/i
-          .test(stripAnsi(report))
+        isFullNetworkReport(report)
       )
       .join("\n\n");
 
+  // Backroute Trace 同样使用「网络质量体检报告」标题，
+  // 但它只有回程部分。
+  //
+  // 以前只判断有没有「三网回程路由」，
+  // 导致完整 NetQuality 报告也被塞进了回程路由。
+  //
+  // 现在明确排除完整网络质量报告，
+  // 只留下独立 Backroute Trace 报告。
   const route =
     netReports
       .filter((report) =>
-        /(?:五、三网回程路由|5\.\s*Route to China Mainland)/i
-          .test(stripAnsi(report))
+        hasRouteSection(report) &&
+        !isFullNetworkReport(report)
       )
       .join("\n\n");
 
@@ -1384,7 +1593,13 @@ function sectionMarkup(
   const outputMarkup = content
     ? (
         source === "NodeQuality"
-          ? nodeQualityMarkup(content)
+          ? (
+              key === "network"
+                ? networkNodeQualityMarkup(content)
+                : key === "route"
+                  ? routeNodeQualityMarkup(content)
+                  : nodeQualityMarkup(content)
+            )
           : `<pre class="report-output">${ansiToHtml(content)}</pre>`
       )
     : `<pre class="report-output empty-output"></pre>`;
@@ -1508,7 +1723,12 @@ function reportPage(report) {
   };
   const copyParts = {
     ...parts,
-    route: routePlainText(node.route),
+
+    network:
+      networkPlainText(node.network),
+
+    route:
+      routePlainText(node.route),
   };
 
   const plain =
