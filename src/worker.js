@@ -733,7 +733,6 @@ function reportPage(report) {
   ];
 
   const sections = sectionDefs
-    .filter(([, , , value]) => String(value || "").trim())
     .map(
       ([key, title, source, value], index) =>
         sectionMarkup(
