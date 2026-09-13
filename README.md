@@ -6,9 +6,37 @@ NodeQuality + TcpQuality 一体化 VPS 测试脚本。
 
 ## 快速运行
 
+BaseTest 首页会区分 **普通用户** 与 **root 用户**，可以直接复制对应命令并粘贴到 SSH 终端运行。
+
+### 普通用户
+
+适用于 `ubuntu`、`debian`、`ec2-user` 等非 root 登录账户：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jiaotang777/BaseTest/main/run.sh | sudo bash
+```
+
+### root 用户
+
+如果已经执行 `sudo -i`，或者当前终端提示符为 `#`：
+
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/jiaotang777/BaseTest/main/run.sh)
 ```
+
+不确定当前身份时，可以先执行：
+
+```bash
+whoami
+```
+
+输出 `root` 使用 root 命令，否则使用普通用户命令。
+
+也可以直接访问：
+
+https://basetest.aniya.site
+
+首页提供 `$ 普通用户` 与 `# root 用户` 两种命令卡片，支持一键复制；复制成功后会显示 `PASTE READY`。
 
 运行开始时会一次性完成全部测试项目选择：
 
